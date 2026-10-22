@@ -54,7 +54,7 @@ class FailingVideoProvider implements VideoGenerationProvider {
   async cancel() {}
 }
 
-function setup(options: { provider?: ConceptProvider; video?: VideoGenerationProvider | null; mode?: 'account_growth' | 'affiliate_ugc' } = {}) {
+function setup(options: { provider?: ConceptProvider; video?: VideoGenerationProvider | null; mode?: 'account_growth' | 'affiliate_ugc'; now?: () => Date } = {}) {
   const userData = mkdtempSync(join(tmpdir(), 'ugc-studio-'));
   const meta = MetadataDb.open(userData);
   const bundles = new BundleStore(meta);
@@ -86,7 +86,7 @@ function setup(options: { provider?: ConceptProvider; video?: VideoGenerationPro
     log,
     userData,
     sensitiveValues: () => bundles.list().flatMap((b) => [b.id, b.displayName]),
-    now: () => NOW,
+    now: options.now ?? (() => NOW),
   });
   return { userData, bundles, jobs, library, generation, studio, bundle, lines };
 }
@@ -339,5 +339,53 @@ describe('prompt studio (SQLite, synthetic)', () => {
     expect(view.configs['builtin-asmr']).toMatchObject({ saved: false, config: { count: 10 } });
     expect(view.conceptProvider).toMatchObject({ kind: 'deterministic', remote: false });
     expect(ASMR_TEMPLATE.video.aspectRatio).toBe('9:16');
+  });
+
+  it('T2: ready-to-post list and owner-recorded posts (the app never publishes)', async () => {
+    const { studio, bundle, generation, lines } = setup();
+    const items = (await studio.generate(bundle.id, 'builtin-asmr')).items.slice(0, 2);
+    for (const i of items) {
+      studio.act(bundle.id, i.id, 'approve');
+      studio.act(bundle.id, i.id, 'queue');
+    }
+    expect(await code(() => studio.markPosted(bundle.id, items[0]!.id, null))).toBe('prompt_action_not_allowed'); // no video yet
+    studio.generateVideo(bundle.id, items[0]!.id);
+    await generation.idle();
+    let view = studio.view(bundle.id);
+    expect(view.readyToPost.map((i) => i.id)).toEqual([items[0]!.id]);
+    expect(studio.captionText(bundle.id, items[0]!.id)).toBe(items[0]!.content.caption);
+    expect(await code(() => studio.markPosted(bundle.id, items[0]!.id, 'https://vm.tiktok.com/ZSabc/'))).toBe('invalid_post_link');
+    studio.markPosted(bundle.id, items[0]!.id, 'https://www.tiktok.com/@synth.ternak01/video/7000000000000000123');
+    expect(await code(() => studio.markPosted(bundle.id, items[0]!.id, null))).toBe('prompt_action_not_allowed'); // once only
+    view = studio.view(bundle.id);
+    expect(view.readyToPost).toHaveLength(0);
+    expect(view.posted[0]).toMatchObject({ id: items[0]!.id, status: 'video_ready', post: { postUrl: 'https://www.tiktok.com/@synth.ternak01/video/7000000000000000123' } });
+    expect(lines.join('\n')).not.toContain('synth.ternak01');
+    studio.undoPosted(bundle.id, items[0]!.id);
+    expect(studio.view(bundle.id).readyToPost).toHaveLength(1);
+  });
+
+  it('T2: the daily board counts today’s videos and posts per Ternak Akun account against its target', async () => {
+    const env = setup({ now: () => new Date() });
+    const { studio, bundle, generation, bundles } = env;
+    const other = bundles.create({ displayName: 'Synthetic Ternak 02', mode: 'account_growth' }, [], new ProfileStore(MetadataDb.open(env.userData)));
+    bundles.create({ displayName: 'Synthetic Affiliate 01', mode: 'affiliate_ugc' }, [], new ProfileStore(MetadataDb.open(env.userData)));
+    const [a, b] = (await studio.generate(bundle.id, 'builtin-asmr')).items;
+    for (const i of [a!, b!]) {
+      studio.act(bundle.id, i.id, 'approve');
+      studio.act(bundle.id, i.id, 'queue');
+    }
+    studio.generateVideo(bundle.id, a!.id);
+    await generation.idle();
+    studio.markPosted(bundle.id, a!.id, null);
+    expect(await code(() => studio.setDailyTarget(bundle.id, 0))).toBe('invalid_target');
+    studio.setDailyTarget(other.id, 12);
+    const board = studio.board();
+    expect(board.map((r) => r.displayName)).toEqual(['Synthetic Ternak 01', 'Synthetic Ternak 02']); // affiliate accounts are not on this board
+    expect(board[0]).toMatchObject({ target: 10, videosToday: 1, postedToday: 1, readyToPost: 0, queued: 1, generating: 0, drafts: 8 });
+    expect(board[1]).toMatchObject({ target: 12, videosToday: 0, postedToday: 0 });
+    // Tomorrow, today's work no longer counts toward the day.
+    const tomorrow = new PromptStudioService({ meta: MetadataDb.open(env.userData), bundles, jobs: env.jobs, generation, provider: new TemplateProvider(), log: createLogger(() => undefined), userData: env.userData, sensitiveValues: () => [], now: () => new Date(Date.now() + 36 * 3600 * 1000) });
+    expect(tomorrow.board()[0]).toMatchObject({ videosToday: 0, postedToday: 0 });
   });
 });

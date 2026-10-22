@@ -259,6 +259,22 @@ const MIGRATIONS: readonly string[] = [
      UNIQUE (batch_id, position)
    );
    ALTER TABLE generation_jobs ADD COLUMN prompt_item_id TEXT;`,
+  // T2 (Ternak Akun): posts the owner made by hand and recorded here (the app never publishes),
+  // and each account's daily video target.
+  `CREATE TABLE post_records (
+     id TEXT PRIMARY KEY,
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     prompt_item_id TEXT NOT NULL UNIQUE REFERENCES prompt_items(id),
+     job_id TEXT NOT NULL,
+     post_url TEXT,
+     platform_video_id TEXT,
+     posted_at TEXT NOT NULL
+   );
+   CREATE TABLE production_targets (
+     bundle_id TEXT PRIMARY KEY REFERENCES account_bundles(id),
+     daily_videos INTEGER NOT NULL CHECK (daily_videos BETWEEN 1 AND 50),
+     updated_at TEXT NOT NULL
+   );`,
 ];
 
 export class MetadataDb {

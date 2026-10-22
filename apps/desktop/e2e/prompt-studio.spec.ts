@@ -157,3 +157,63 @@ test('Prompt Studio: generate, edit, regenerate, approve, queue and produce; own
     await quit(run);
   }
 });
+
+test('T2: ready-to-post list, owner-recorded posts and the daily Ternak Akun board', async () => {
+  const dir = await workDir('ternak-board');
+  const run = await launch({ userData: join(dir, 'userData'), site, executablePath, allowUnencryptedSynthetic: false, seedProfiles: false });
+  const ui = run.ui;
+  try {
+    await createAccount(run, 'Synthetic Ternak 01', 'account_growth');
+    await createAccount(run, 'Synthetic Ternak 02', 'account_growth');
+    await createAccount(run, 'Synthetic Affiliate 01', 'affiliate_ugc');
+    await ui.reload();
+    await ui.locator('tr', { hasText: 'Synthetic Ternak 01' }).getByRole('button', { name: 'Prompt Studio' }).click();
+    await ui.locator('input[name=count]').fill('3');
+    await ui.getByRole('button', { name: 'Generate 3 prompts' }).click();
+    await ui.getByRole('button', { name: 'Approve all unflagged drafts' }).click();
+    await expect(ui.getByTestId('prompts-notice')).toContainText('Approved: 3 prompts');
+    await ui.getByRole('button', { name: 'Queue all approved' }).click();
+    await expect(ui.getByTestId('studio-summary').locator('[data-status=queued]')).toContainText('3');
+    await expect(ui.getByTestId('ready-to-post')).toHaveCount(0);
+    await card(ui, 1).getByRole('button', { name: /Generate with Synthetic/ }).click();
+    await card(ui, 1).getByRole('button', { name: 'Confirm: generate video' }).click();
+    await expect(card(ui, 1)).toHaveAttribute('data-status', 'video_ready', { timeout: 15000 });
+
+    const ready = ui.getByTestId('ready-to-post').locator('li');
+    await expect(ready).toHaveCount(1);
+    const caption = (await card(ui, 1).getByTestId('prompt-caption').textContent())!;
+    await ready.getByRole('button', { name: 'Copy caption' }).click();
+    await expect(ready.getByRole('button', { name: 'Caption copied ✓' })).toBeVisible();
+    expect(await run.app.evaluate(({ clipboard }) => clipboard.readText())).toBe(caption);
+    await ready.getByLabel('TikTok post link (optional)').fill('https://vm.tiktok.com/ZSynth/');
+    await ready.getByRole('button', { name: 'I posted it' }).click();
+    await expect(ui.getByTestId('post-notice')).toContainText('isn’t a TikTok video link');
+    await ready.getByLabel('TikTok post link (optional)').fill('https://www.tiktok.com/@synth.ternak01/video/7000000000000000777');
+    await ready.getByRole('button', { name: 'I posted it' }).click();
+    await expect(ui.getByTestId('ready-to-post')).toHaveCount(0);
+    await expect(ui.getByTestId('posted')).toContainText('https://www.tiktok.com/@synth.ternak01/video/7000000000000000777');
+    await expect(card(ui, 1)).toContainText('Posted (marked by you)');
+    await ui.getByRole('heading', { name: '4. Ready to post' }).scrollIntoViewIfNeeded();
+    await ui.screenshot({ path: join(SHOTS, '05-ready-to-post.png'), fullPage: true });
+
+    // The daily board: growth accounts only, today's numbers against each target.
+    await ui.getByRole('button', { name: '← All accounts' }).click();
+    await ui.getByRole('button', { name: 'Ternak Akun today' }).click();
+    const board = ui.getByTestId('board');
+    await expect(board.locator('tbody tr')).toHaveCount(2);
+    await expect(board).not.toContainText('Synthetic Affiliate 01');
+    const row = board.locator('tr', { hasText: 'Synthetic Ternak 01' });
+    await expect(row.getByTestId('videos-today')).toContainText('1/10');
+    await expect(row.getByTestId('posted-today')).toHaveText('1');
+    await expect(row.getByTestId('ready-to-post')).toHaveText('0');
+    await row.getByLabel('Daily target for Synthetic Ternak 01').fill('5');
+    await row.getByRole('button', { name: 'save' }).click();
+    await expect(row.getByTestId('videos-today')).toContainText('1/5');
+    await expect(ui.getByTestId('board-summary')).toContainText('1/15 videos today');
+    await ui.screenshot({ path: join(SHOTS, '06-ternak-akun-today.png'), fullPage: true });
+    await row.getByRole('button', { name: 'Open Prompt Studio' }).click();
+    await expect(ui.getByRole('heading', { name: 'Prompt Studio · Synthetic Ternak 01' })).toBeVisible();
+  } finally {
+    await quit(run);
+  }
+});

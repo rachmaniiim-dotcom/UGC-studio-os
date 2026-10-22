@@ -1,7 +1,7 @@
 import { ACCOUNT_STATUS, MODE_LABELS, SESSION_STATUS, type Account } from './bridge.js';
 import { Badge } from './Badge.js';
 
-export function Dashboard(props: { accounts: Account[]; onAdd: () => void; onEdit: (id: string) => void; onGrowth: (id: string) => void; onStudio: (id: string) => void }): React.JSX.Element {
+export function Dashboard(props: { accounts: Account[]; onAdd: () => void; onEdit: (id: string) => void; onGrowth: (id: string) => void; onStudio: (id: string) => void; onBoard: () => void }): React.JSX.Element {
   const { accounts } = props;
   const counts = {
     total: accounts.length,
@@ -19,9 +19,16 @@ export function Dashboard(props: { accounts: Account[]; onAdd: () => void; onEdi
             draft
           </p>
         </div>
-        <button type="button" className="primary" onClick={props.onAdd}>
-          + Add account
-        </button>
+        <div className="actions end">
+          {accounts.some((a) => a.mode === 'account_growth') && (
+            <button type="button" onClick={props.onBoard}>
+              Ternak Akun today
+            </button>
+          )}
+          <button type="button" className="primary" onClick={props.onAdd}>
+            + Add account
+          </button>
+        </div>
       </div>
       {accounts.length === 0 ? (
         <div className="empty">

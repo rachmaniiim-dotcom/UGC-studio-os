@@ -76,6 +76,8 @@ export type IpcErrorCode =
   | 'rights_not_confirmed'
   | 'invalid_preset'
   | 'unknown_video'
+  | 'invalid_post_link'
+  | 'invalid_target'
   | 'internal_error';
 
 /** `details` carries sanitized issue codes (e.g. which field is invalid), never input values. */
@@ -698,6 +700,50 @@ export function registerIpc({
       return studioCall(() => {
         shell.showItemInFolder(studio.referencePath(bundle.id, assetId));
         return { shown: true };
+      });
+    },
+
+    'studio:copy-caption': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'itemId']);
+      const bundle = requireBundle(request);
+      const itemId = requireId(request, 'itemId');
+      return studioCall(() => {
+        clipboard.writeText(studio.captionText(bundle.id, itemId));
+        return { copied: true };
+      });
+    },
+
+    // Records a post the owner made by hand on TikTok. The app never publishes.
+    'studio:mark-posted': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'itemId', 'postUrl']);
+      const bundle = requireBundle(request);
+      const itemId = requireId(request, 'itemId');
+      const postUrl = request['postUrl'];
+      if (postUrl !== null && (typeof postUrl !== 'string' || postUrl.length > 500)) throw new IpcError('invalid_request');
+      return studioCall(() => {
+        studio.markPosted(bundle.id, itemId, postUrl as string | null);
+        return studio.view(bundle.id);
+      });
+    },
+
+    'studio:undo-posted': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'itemId']);
+      const bundle = requireBundle(request);
+      const itemId = requireId(request, 'itemId');
+      return studioCall(() => {
+        studio.undoPosted(bundle.id, itemId);
+        return studio.view(bundle.id);
+      });
+    },
+
+    'studio:board': async () => studioCall(() => studio.board()),
+
+    'studio:set-target': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'target']);
+      const bundle = requireBundle(request);
+      return studioCall(() => {
+        studio.setDailyTarget(bundle.id, request['target']);
+        return studio.board();
       });
     },
 

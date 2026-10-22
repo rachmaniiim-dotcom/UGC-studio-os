@@ -12,6 +12,7 @@ import {
   looksLikeMp4,
   manualSteps,
   nearDuplicates,
+  parseTikTokVideoUrl,
   payloadIsSafe,
   planVariations,
   PROMPT_ACTIONS,
@@ -62,7 +63,9 @@ export type StudioErrorCode =
   | 'rights_not_confirmed'
   | 'invalid_preset'
   | 'unknown_video'
-  | 'no_provider';
+  | 'no_provider'
+  | 'invalid_post_link'
+  | 'invalid_target';
 
 export class StudioError extends Error {
   constructor(
@@ -116,6 +119,8 @@ export interface PromptItem {
   readonly jobId: string | null;
   readonly lastError: string | null;
   readonly video: { jobId: string; file: string } | null;
+  /** Recorded by the owner after posting by hand; the app never publishes. */
+  readonly post: { id: string; postedAt: string; postUrl: string | null } | null;
   readonly updatedAt: string;
 }
 
@@ -141,6 +146,28 @@ export interface StudioView {
   readonly conceptProvider: ConceptProviderDescriptor;
   readonly videoProvider: { available: boolean; label: string | null; reason: string | null };
   readonly unlinkedVideos: ReadonlyArray<{ jobId: string; source: string; createdAt: string; bytes: number | null }>;
+  /** Video-ready prompts not yet marked as posted, oldest first. */
+  readonly readyToPost: readonly PromptItem[];
+  /** Recently recorded posts, newest first. */
+  readonly posted: readonly PromptItem[];
+  readonly dailyTarget: number;
+}
+
+export const DEFAULT_DAILY_TARGET = 10;
+
+export interface BoardRow {
+  readonly bundleId: string;
+  readonly displayName: string;
+  readonly target: number;
+  /** Videos that reached the account's library today (generated or downloaded from Flow). */
+  readonly videosToday: number;
+  /** Posts the owner recorded today. */
+  readonly postedToday: number;
+  readonly readyToPost: number;
+  readonly queued: number;
+  readonly generating: number;
+  readonly approved: number;
+  readonly drafts: number;
 }
 
 interface ItemRow {
@@ -445,6 +472,12 @@ export class PromptStudioService {
     return item.rendered;
   }
 
+  /** The caption to paste into TikTok when posting by hand. */
+  captionText(bundleId: string, itemId: string): string {
+    const item = this.#item(bundleId, itemId);
+    return (JSON.parse(item.content_json) as PromptContent).caption;
+  }
+
   /** Starts a video job from a queued prompt with the configured provider (synthetic in tests; none in real use yet). */
   generateVideo(bundleId: string, itemId: string): GenerationJob {
     this.#requireGrowth(bundleId);
@@ -625,6 +658,98 @@ export class PromptStudioService {
     this.#db.prepare('DELETE FROM creative_presets WHERE id = ?').run(id);
   }
 
+  // ---- Posting (by hand) and the daily board ----
+
+  #post(itemId: string): PromptItem['post'] {
+    const row = this.#db.prepare('SELECT id, posted_at, post_url FROM post_records WHERE prompt_item_id = ?').get(itemId) as
+      | { id: string; posted_at: string; post_url: string | null }
+      | undefined;
+    return row ? { id: row.id, postedAt: row.posted_at, postUrl: row.post_url } : null;
+  }
+
+  /** The owner posted this video on TikTok themselves; the app records it (optionally with the post's link). */
+  markPosted(bundleId: string, itemId: string, postUrl: string | null): void {
+    this.#requireGrowth(bundleId);
+    const item = this.#item(bundleId, itemId);
+    if (item.status !== 'video_ready' || !item.job_id) throw new StudioError('prompt_action_not_allowed');
+    if (this.#post(itemId)) throw new StudioError('prompt_action_not_allowed');
+    let url: string | null = null;
+    let videoId: string | null = null;
+    if (postUrl !== null && postUrl.trim() !== '') {
+      const parsed = parseTikTokVideoUrl(postUrl);
+      if ('error' in parsed) throw new StudioError('invalid_post_link', [parsed.error]);
+      url = parsed.url;
+      videoId = parsed.videoId;
+    }
+    this.#db
+      .prepare('INSERT INTO post_records (id, bundle_id, prompt_item_id, job_id, post_url, platform_video_id, posted_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(randomUUID(), bundleId, itemId, item.job_id, url, videoId, this.#iso());
+    this.#deps.log.info('post_recorded', { bundleId, itemId, withLink: url !== null });
+  }
+
+  undoPosted(bundleId: string, itemId: string): void {
+    this.#requireGrowth(bundleId);
+    this.#item(bundleId, itemId);
+    this.#db.prepare('DELETE FROM post_records WHERE prompt_item_id = ? AND bundle_id = ?').run(itemId, bundleId);
+  }
+
+  dailyTarget(bundleId: string): number {
+    const row = this.#db.prepare('SELECT daily_videos FROM production_targets WHERE bundle_id = ?').get(bundleId) as { daily_videos: number } | undefined;
+    return row?.daily_videos ?? DEFAULT_DAILY_TARGET;
+  }
+
+  setDailyTarget(bundleId: string, target: unknown): void {
+    this.#requireGrowth(bundleId);
+    if (!Number.isInteger(target) || (target as number) < 1 || (target as number) > 50) throw new StudioError('invalid_target');
+    this.#db
+      .prepare(
+        `INSERT INTO production_targets (bundle_id, daily_videos, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(bundle_id) DO UPDATE SET daily_videos = excluded.daily_videos, updated_at = excluded.updated_at`,
+      )
+      .run(bundleId, target as number, this.#iso());
+  }
+
+  /** Start of today on this computer's clock (the owner's local day). */
+  #todayStart(): string {
+    const now = this.#now();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+  }
+
+  /** Today's production per Ternak Akun account, from this app's own records only. */
+  board(): BoardRow[] {
+    const today = this.#todayStart();
+    return this.#deps.bundles
+      .list()
+      .filter((b) => b.mode === 'account_growth')
+      .map((b) => {
+        const counts = { draft: 0, approved: 0, rejected: 0, queued: 0, generating: 0, video_ready: 0 } as Record<PromptStatus, number>;
+        for (const r of this.#db.prepare('SELECT status, COUNT(*) AS n FROM prompt_items WHERE bundle_id = ? GROUP BY status').all(b.id) as Array<{ status: PromptStatus; n: number }>) {
+          counts[r.status] = r.n;
+        }
+        const one = (sql: string, ...args: string[]): number => (this.#db.prepare(sql).get(...args) as { n: number }).n;
+        return {
+          bundleId: b.id,
+          displayName: b.displayName,
+          target: this.dailyTarget(b.id),
+          // When the video arrived (the completed event), not when it was last linked or edited.
+          videosToday: one(
+            "SELECT COUNT(DISTINCT j.id) AS n FROM generation_jobs j JOIN generation_events e ON e.job_id = j.id WHERE j.bundle_id = ? AND j.video_file IS NOT NULL AND e.to_state = 'completed' AND e.at >= ?",
+            b.id,
+            today,
+          ),
+          postedToday: one('SELECT COUNT(*) AS n FROM post_records WHERE bundle_id = ? AND posted_at >= ?', b.id, today),
+          readyToPost: one(
+            "SELECT COUNT(*) AS n FROM prompt_items i WHERE bundle_id = ? AND status = 'video_ready' AND NOT EXISTS (SELECT 1 FROM post_records p WHERE p.prompt_item_id = i.id)",
+            b.id,
+          ),
+          queued: counts.queued,
+          generating: counts.generating,
+          approved: counts.approved,
+          drafts: counts.draft,
+        };
+      });
+  }
+
   // ---- Views ----
 
   #item(bundleId: string, itemId: string): ItemRow {
@@ -679,6 +804,7 @@ export class PromptStudioService {
         jobId: r.job_id,
         lastError: r.last_error,
         video: r.status === 'video_ready' && job?.videoFile ? { jobId: job.id, file: job.videoFile } : null,
+        post: this.#post(r.id),
         updatedAt: r.updated_at,
       };
     });
@@ -711,6 +837,12 @@ export class PromptStudioService {
       .list(bundleId, 50)
       .filter((j) => j.state === 'completed' && j.videoFile && !j.promptItemId)
       .map((j) => ({ jobId: j.id, source: j.source, createdAt: j.createdAt, bytes: j.videoBytes }));
+    // Videos to post can come from any batch, not only the recent ones shown above.
+    const allItems = (
+      this.#db
+        .prepare("SELECT * FROM prompt_batches b WHERE bundle_id = ? AND EXISTS (SELECT 1 FROM prompt_items i WHERE i.batch_id = b.id AND i.status = 'video_ready')")
+        .all(bundleId) as unknown as BatchRow[]
+    ).flatMap((b) => this.#batchView(b).items);
     return {
       templates,
       configs,
@@ -721,6 +853,12 @@ export class PromptStudioService {
       conceptProvider: this.#deps.provider.descriptor,
       videoProvider: { available: !!gen?.provider, label: gen?.provider?.displayName ?? null, reason: gen?.provider ? null : (gen?.unavailableReason ?? 'not enabled') },
       unlinkedVideos,
+      readyToPost: allItems.filter((i) => i.status === 'video_ready' && !i.post).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)),
+      posted: allItems
+        .filter((i) => i.post)
+        .sort((a, b) => b.post!.postedAt.localeCompare(a.post!.postedAt))
+        .slice(0, 20),
+      dailyTarget: this.dailyTarget(bundleId),
     };
   }
 }

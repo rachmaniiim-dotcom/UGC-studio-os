@@ -48,6 +48,11 @@ contextBridge.exposeInMainWorld(
     revealReferenceAsset: (bundleId: string, assetId: string) => ipcRenderer.invoke('studio:reveal-reference', { bundleId, assetId }),
     savePreset: (bundleId: string, kind: string, name: string, text: string) => ipcRenderer.invoke('studio:save-preset', { bundleId, kind, name, text }),
     deletePreset: (bundleId: string, presetId: string) => ipcRenderer.invoke('studio:delete-preset', { bundleId, presetId }),
+    copyCaption: (bundleId: string, itemId: string) => ipcRenderer.invoke('studio:copy-caption', { bundleId, itemId }),
+    markPosted: (bundleId: string, itemId: string, postUrl: string | null) => ipcRenderer.invoke('studio:mark-posted', { bundleId, itemId, postUrl }),
+    undoPosted: (bundleId: string, itemId: string) => ipcRenderer.invoke('studio:undo-posted', { bundleId, itemId }),
+    productionBoard: () => ipcRenderer.invoke('studio:board', {}),
+    setDailyTarget: (bundleId: string, target: number) => ipcRenderer.invoke('studio:set-target', { bundleId, target }),
     // Platform sessions
     getPlatform: () => ipcRenderer.invoke('poc:get-platform'),
     listProfiles: () => ipcRenderer.invoke('poc:list-profiles'),

@@ -3,11 +3,12 @@ import { AccountEditor } from './AccountEditor.js';
 import { bridge, describeError, type Account, type PlatformInfo, type Session } from './bridge.js';
 import { Dashboard } from './Dashboard.js';
 import { GrowthIntelligence } from './GrowthIntelligence.js';
+import { ProductionBoard } from './ProductionBoard.js';
 import { PromptStudio } from './PromptStudio.js';
 import { LegacyProfiles } from './LegacyProfiles.js';
 
 // `visit` keeps the editor mounted while a new draft gets its id (so its confirmations stay visible).
-type View = { kind: 'dashboard' } | { kind: 'editor'; accountId: string | null; visit: number } | { kind: 'growth'; accountId: string } | { kind: 'studio'; accountId: string };
+type View = { kind: 'dashboard' } | { kind: 'editor'; accountId: string | null; visit: number } | { kind: 'growth'; accountId: string } | { kind: 'studio'; accountId: string } | { kind: 'board' };
 
 export function App(): React.JSX.Element {
   const [view, setView] = useState<View>({ kind: 'dashboard' });
@@ -58,9 +59,18 @@ export function App(): React.JSX.Element {
               onEdit={(id) => openEditor(id)}
               onGrowth={(id) => setView({ kind: 'growth', accountId: id })}
               onStudio={(id) => setView({ kind: 'studio', accountId: id })}
+              onBoard={() => setView({ kind: 'board' })}
             />
             {legacy && <LegacyProfiles platform={legacy.platform} profiles={legacy.profiles} onChanged={refresh} />}
           </>
+        ) : view.kind === 'board' ? (
+          <ProductionBoard
+            onBack={async () => {
+              await refresh();
+              setView({ kind: 'dashboard' });
+            }}
+            onStudio={(id) => setView({ kind: 'studio', accountId: id })}
+          />
         ) : view.kind === 'studio' ? (
           <PromptStudio
             account={accounts.find((a) => a.id === view.accountId) ?? null}

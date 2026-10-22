@@ -156,3 +156,11 @@ label.tiny { font-size: 0.72rem; }
 .template-editor .editor-row:has(select) { grid-template-columns: 120px 160px 120px 1fr auto auto; }
 .template-editor .key { font-family: Consolas, 'Cascadia Mono', monospace; }
 .editor-grid { grid-template-columns: repeat(4, 1fr); }
+.post-list { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; }
+.post-list > li { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.post-list.posted > li { padding: 4px 8px; }
+.post-caption { font-size: 0.9rem; }
+.post-link { min-width: 320px; flex: 1; }
+.board-table input.target { width: 56px; }
+.progress { height: 4px; background: var(--chip-bg); border-radius: 2px; margin-top: 4px; width: 90px; }
+.progress span { display: block; height: 100%; background: var(--accent); border-radius: 2px; }

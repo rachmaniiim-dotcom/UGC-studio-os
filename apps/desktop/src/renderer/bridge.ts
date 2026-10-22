@@ -217,7 +217,21 @@ export interface PromptItem {
   jobId: string | null;
   lastError: string | null;
   video: { jobId: string; file: string } | null;
+  post: { id: string; postedAt: string; postUrl: string | null } | null;
   updatedAt: string;
+}
+
+export interface BoardRow {
+  bundleId: string;
+  displayName: string;
+  target: number;
+  videosToday: number;
+  postedToday: number;
+  readyToPost: number;
+  queued: number;
+  generating: number;
+  approved: number;
+  drafts: number;
 }
 
 export interface PromptBatch {
@@ -251,6 +265,9 @@ export interface StudioView {
   conceptProvider: { id: string; displayName: string; kind: string; remote: boolean };
   videoProvider: { available: boolean; label: string | null; reason: string | null };
   unlinkedVideos: Array<{ jobId: string; source: string; createdAt: string; bytes: number | null }>;
+  readyToPost: PromptItem[];
+  posted: PromptItem[];
+  dailyTarget: number;
 }
 
 export interface Account {
@@ -315,6 +332,11 @@ interface UgcBridge {
   revealReferenceAsset(bundleId: string, assetId: string): Promise<Result<{ shown: boolean }>>;
   savePreset(bundleId: string, kind: string, name: string, text: string): Promise<Result<StudioView>>;
   deletePreset(bundleId: string, presetId: string): Promise<Result<StudioView>>;
+  copyCaption(bundleId: string, itemId: string): Promise<Result<{ copied: boolean }>>;
+  markPosted(bundleId: string, itemId: string, postUrl: string | null): Promise<Result<StudioView>>;
+  undoPosted(bundleId: string, itemId: string): Promise<Result<StudioView>>;
+  productionBoard(): Promise<Result<BoardRow[]>>;
+  setDailyTarget(bundleId: string, target: number): Promise<Result<BoardRow[]>>;
   getPlatform(): Promise<Result<PlatformInfo | null>>;
   listProfiles(): Promise<Result<Session[]>>;
   importCookies(profileId: string): Promise<Result<{ canceled: boolean; profile: Session }>>;
@@ -404,6 +426,8 @@ const MESSAGES: Record<string, [message: string, recovery: string]> = {
   invalid_reference_file: ['That file can’t be used as a reference.', 'Use a JPG, PNG, WEBP, MP4 or MOV file under 200 MB.'],
   rights_not_confirmed: ['Confirm that you own the file or have rights to use it.', 'Tick the confirmation box first.'],
   invalid_preset: ['The preset can’t be saved.', 'Give it a name and a description (max 2,000 characters).'],
+  invalid_post_link: ['That isn’t a TikTok video link.', 'Paste the full link of your post (https://www.tiktok.com/@you/video/…) or leave it empty.'],
+  invalid_target: ['The daily target must be a whole number from 1 to 50.', 'Enter a number and save again.'],
   unknown_video: ['That video can’t be linked.', 'Choose a finished video of this account that isn’t linked to another prompt.'],
   untrusted_sender: ['The request was refused.', 'Restart the app.'],
   internal_error: ['Something went wrong.', 'Try again; if it repeats, restart the app.'],

@@ -155,6 +155,7 @@ export function PromptStudio(props: { account: Account | null; onBack: () => Pro
             <ConfigForm key={`${template.key}:${template.version}`} bundleId={account.id} template={template} view={view} onView={setView} />
           )}
           <PromptList bundleId={account.id} view={view} onView={setView} />
+          <ReadyToPost bundleId={account.id} view={view} onView={setView} />
         </>
       )}
     </section>
@@ -724,13 +725,100 @@ function PromptCard(props: {
             </>
           )}
           {i.status === 'video_ready' && i.video && (
-            <button type="button" className="primary" onClick={() => void bridge.revealVideo(i.video!.jobId)}>
-              Show video in folder
-            </button>
+            <>
+              <button type="button" className="primary" onClick={() => void bridge.revealVideo(i.video!.jobId)}>
+                Show video in folder
+              </button>
+              {i.post ? <span className="small muted">Posted (marked by you) {new Date(i.post.postedAt).toLocaleString()}</span> : <span className="small muted">Ready to post: see below.</span>}
+            </>
           )}
         </div>
       )}
     </article>
+  );
+}
+
+function ReadyToPost(props: { bundleId: string; view: StudioView; onView: (v: StudioView) => void }): React.JSX.Element {
+  const [links, setLinks] = useState<Record<string, string>>({});
+  const [copied, setCopied] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice>(null);
+  const { readyToPost, posted } = props.view;
+  return (
+    <section className="card" aria-labelledby="post-title">
+      <h3 id="post-title">4. Ready to post</h3>
+      <p className="muted small">
+        Videos whose file is in this account’s library. Post them yourself in TikTok (open the account’s TikTok window), then mark them as posted here. The app does not publish,
+        schedule or add AI labels for you: when posting a realistic AI video, turn on TikTok’s AI-generated content label.
+      </p>
+      <NoticeBox notice={notice} testId="post-notice" />
+      {readyToPost.length === 0 ? (
+        <p className="muted small">Nothing ready to post yet.</p>
+      ) : (
+        <ul className="post-list" data-testid="ready-to-post">
+          {readyToPost.map((i) => (
+            <li key={i.id} data-prompt-id={i.id}>
+              <div className="post-caption">{i.content.caption}</div>
+              <div className="actions">
+                <button type="button" onClick={() => void bridge.revealVideo(i.video!.jobId)}>
+                  Show video
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const r = await bridge.copyCaption(props.bundleId, i.id);
+                    if (r.ok) setCopied(i.id);
+                  }}
+                >
+                  {copied === i.id ? 'Caption copied ✓' : 'Copy caption'}
+                </button>
+                <input
+                  className="post-link"
+                  aria-label="TikTok post link (optional)"
+                  placeholder="Post link (optional): https://www.tiktok.com/@you/video/…"
+                  value={links[i.id] ?? ''}
+                  onChange={(e) => setLinks({ ...links, [i.id]: e.target.value })}
+                />
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={async () => {
+                    const r = await bridge.markPosted(props.bundleId, i.id, (links[i.id] ?? '').trim() || null);
+                    if (!r.ok) return setNotice(errNotice(r.error));
+                    setNotice(null);
+                    props.onView(r.data);
+                  }}
+                >
+                  I posted it
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {posted.length > 0 && (
+        <>
+          <h4>Recently posted (marked by you)</h4>
+          <ul className="post-list posted" data-testid="posted">
+            {posted.map((i) => (
+              <li key={i.id} data-prompt-id={i.id}>
+                <span className="small">{new Date(i.post!.postedAt).toLocaleString()}</span> · <span className="small">{i.content.caption}</span>
+                {i.post!.postUrl && <span className="small mono"> · {i.post!.postUrl}</span>}{' '}
+                <button
+                  type="button"
+                  className="link"
+                  onClick={async () => {
+                    const r = await bridge.undoPosted(props.bundleId, i.id);
+                    if (r.ok) props.onView(r.data);
+                  }}
+                >
+                  undo
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
   );
 }
 
