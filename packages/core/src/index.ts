@@ -74,3 +74,39 @@ export {
   type VideoGenerationProvider,
   type VideoSettings,
 } from './generation/model.js';
+export {
+  DEFAULT_THRESHOLDS,
+  EMPTY_STRATEGY,
+  validateStrategy,
+  type GrowthStrategy,
+  type ResearchThresholds,
+  type StrategyIssue,
+} from './growth/strategy.js';
+export {
+  CSV_COLUMNS,
+  csvRowToReference,
+  normalizeHandle,
+  parseMetric,
+  parseReferenceCsv,
+  parseTikTokVideoUrl,
+  validateReference,
+  type Exactness,
+  type MetricValue,
+  type ReferenceIssue,
+  type ReferenceMetrics,
+  type ReferenceVideoInput,
+  type Relevance,
+} from './research/reference.js';
+export {
+  assessReferences,
+  describeFlag,
+  explainAssessment,
+  median,
+  type Assessment,
+  type Baseline,
+  type BaselineLevel,
+  type Confidence,
+  type QualityFlag,
+  type ScoredVideo,
+  type Verdict,
+} from './research/outlier.js';

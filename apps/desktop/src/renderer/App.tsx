@@ -2,10 +2,11 @@ import { useCallback, useEffect, useState } from 'react';
 import { AccountEditor } from './AccountEditor.js';
 import { bridge, describeError, type Account, type PlatformInfo, type Session } from './bridge.js';
 import { Dashboard } from './Dashboard.js';
+import { GrowthIntelligence } from './GrowthIntelligence.js';
 import { LegacyProfiles } from './LegacyProfiles.js';
 
 // `visit` keeps the editor mounted while a new draft gets its id (so its confirmations stay visible).
-type View = { kind: 'dashboard' } | { kind: 'editor'; accountId: string | null; visit: number };
+type View = { kind: 'dashboard' } | { kind: 'editor'; accountId: string | null; visit: number } | { kind: 'growth'; accountId: string };
 
 export function App(): React.JSX.Element {
   const [view, setView] = useState<View>({ kind: 'dashboard' });
@@ -54,9 +55,18 @@ export function App(): React.JSX.Element {
               accounts={accounts}
               onAdd={() => openEditor(null)}
               onEdit={(id) => openEditor(id)}
+              onGrowth={(id) => setView({ kind: 'growth', accountId: id })}
             />
             {legacy && <LegacyProfiles platform={legacy.platform} profiles={legacy.profiles} onChanged={refresh} />}
           </>
+        ) : view.kind === 'growth' ? (
+          <GrowthIntelligence
+            account={accounts.find((a) => a.id === view.accountId) ?? null}
+            onBack={async () => {
+              await refresh();
+              setView({ kind: 'dashboard' });
+            }}
+          />
         ) : (
           <AccountEditor
             key={view.visit}

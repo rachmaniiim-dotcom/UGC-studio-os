@@ -156,6 +156,38 @@ const MIGRATIONS: readonly string[] = [
      to_state TEXT NOT NULL,
      code TEXT
    );`,
+  // Gate 5 (R1/R2): growth strategy, reference creators and reference videos. Baselines and
+  // outlier assessments are computed on demand from these rows, never stored.
+  `CREATE TABLE growth_strategies (
+     bundle_id TEXT PRIMARY KEY REFERENCES account_bundles(id),
+     strategy_json TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE TABLE reference_creators (
+     id TEXT PRIMARY KEY,
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     handle TEXT NOT NULL,
+     note TEXT NOT NULL DEFAULT '',
+     added_at TEXT NOT NULL,
+     UNIQUE (bundle_id, handle)
+   );
+   CREATE TABLE reference_videos (
+     id TEXT PRIMARY KEY,
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     url TEXT NOT NULL,
+     platform_video_id TEXT NOT NULL,
+     creator_handle TEXT NOT NULL,
+     published_at TEXT,
+     duration_s INTEGER,
+     metrics_json TEXT NOT NULL,
+     relevance TEXT NOT NULL DEFAULT 'unrated' CHECK (relevance IN ('unrated', 'relevant', 'not_relevant')),
+     pinned INTEGER NOT NULL DEFAULT 0,
+     note TEXT NOT NULL DEFAULT '',
+     source TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     UNIQUE (bundle_id, platform_video_id)
+   );`,
 ];
 
 export class MetadataDb {

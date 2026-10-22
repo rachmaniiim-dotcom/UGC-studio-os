@@ -18,6 +18,7 @@ import type { RuntimeConfig } from './config.js';
 import { replaceCookies, type LoadResult } from './electron-cookies.js';
 import { cookieEncryptionFuseEnabled } from './fuses.js';
 import { GenerationError, type GenerationService } from './generation.js';
+import { GrowthError, type GrowthService } from './growth.js';
 import type { GenerationJob, GenerationStore } from './generation-store.js';
 import type { VideoLibrary } from './library.js';
 import { SYNTHETIC_PLATFORM_ID } from './platforms.js';
@@ -51,6 +52,12 @@ export type IpcErrorCode =
   | 'job_in_progress'
   | 'daily_cap_reached'
   | 'unknown_job'
+  | 'invalid_strategy'
+  | 'invalid_reference'
+  | 'invalid_creator'
+  | 'unknown_reference'
+  | 'invalid_csv'
+  | 'source_not_authorized'
   | 'internal_error';
 
 /** `details` carries sanitized issue codes (e.g. which field is invalid), never input values. */
@@ -81,6 +88,7 @@ export interface IpcDeps {
   readonly library: VideoLibrary;
   /** Called for each newly created bundle session (e.g. to attach the Flow download policy). */
   readonly onSessionCreated: (profile: PocProfile) => void;
+  readonly growth: GrowthService;
 }
 
 /** What the UI may know about a platform. */
@@ -170,6 +178,7 @@ export function registerIpc({
   jobs,
   library,
   onSessionCreated,
+  growth,
 }: IpcDeps): void {
   const devTools = config.synthetic;
   const platformOf = (profile: PocProfile): PlatformDefinition | undefined => platforms.get(profile.platformId);
@@ -240,6 +249,15 @@ export function registerIpc({
       return await run();
     } catch (err) {
       if (err instanceof ProxyError) throw new IpcError(err.code as IpcErrorCode, err.details);
+      throw err;
+    }
+  };
+
+  const growthCall = <T>(run: () => T): T => {
+    try {
+      return run();
+    } catch (err) {
+      if (err instanceof GrowthError) throw new IpcError(err.code, err.details);
       throw err;
     }
   };
@@ -381,6 +399,100 @@ export function registerIpc({
       if (!job || job.state !== 'completed' || !job.videoFile) throw new IpcError('unknown_job');
       shell.showItemInFolder(library.absolute(job.videoFile));
       return { shown: true };
+    },
+
+    // ---- Growth Intelligence (Gate 5, R1/R2): owner-entered research, deterministic scoring ----
+
+    'growth:view': async (payload) => growthCall(() => growth.view(requireBundle(requireObject(payload, ['bundleId'])).id)),
+
+    'growth:save-strategy': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'strategy']);
+      const bundle = requireBundle(request);
+      return growthCall(() => {
+        growth.saveStrategy(bundle.id, request['strategy']);
+        return growth.view(bundle.id);
+      });
+    },
+
+    'growth:add-creator': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'handle', 'note']);
+      const bundle = requireBundle(request);
+      if (typeof request['handle'] !== 'string' || typeof request['note'] !== 'string') throw new IpcError('invalid_request');
+      return growthCall(() => {
+        growth.addCreator(bundle.id, request['handle'] as string, request['note'] as string);
+        return growth.view(bundle.id);
+      });
+    },
+
+    'growth:remove-creator': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'creatorId']);
+      const bundle = requireBundle(request);
+      if (typeof request['creatorId'] !== 'string' || !PROFILE_ID.test(request['creatorId'])) throw new IpcError('invalid_request');
+      return growthCall(() => {
+        growth.removeCreator(bundle.id, request['creatorId'] as string);
+        return growth.view(bundle.id);
+      });
+    },
+
+    'growth:add-reference': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'reference']);
+      const bundle = requireBundle(request);
+      const reference = request['reference'];
+      if (typeof reference !== 'object' || reference === null || Array.isArray(reference)) throw new IpcError('invalid_request');
+      return growthCall(() => {
+        const outcome = growth.addReference(bundle.id, reference as Record<string, unknown>);
+        return { outcome, view: growth.view(bundle.id) };
+      });
+    },
+
+    'growth:update-reference': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'referenceId', 'patch']);
+      const bundle = requireBundle(request);
+      const patch = request['patch'];
+      if (typeof request['referenceId'] !== 'string' || !PROFILE_ID.test(request['referenceId']) || typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
+        throw new IpcError('invalid_request');
+      }
+      return growthCall(() => {
+        growth.updateReference(bundle.id, request['referenceId'] as string, patch as Record<string, unknown>);
+        return growth.view(bundle.id);
+      });
+    },
+
+    'growth:remove-reference': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'referenceId']);
+      const bundle = requireBundle(request);
+      if (typeof request['referenceId'] !== 'string' || !PROFILE_ID.test(request['referenceId'])) throw new IpcError('invalid_request');
+      return growthCall(() => {
+        growth.removeReference(bundle.id, request['referenceId'] as string);
+        return growth.view(bundle.id);
+      });
+    },
+
+    'growth:import-csv-text': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'text']);
+      const bundle = requireBundle(request);
+      const text = request['text'];
+      if (typeof text !== 'string' || text.length > DEFAULT_MAX_BYTES) throw new IpcError('invalid_request');
+      return growthCall(() => ({ result: growth.importCsv(bundle.id, text), view: growth.view(bundle.id) }));
+    },
+
+    // The main process picks and reads the CSV file (2 MB cap), like the cookie import.
+    'growth:import-csv-file': async (payload) => {
+      const bundle = requireBundle(requireObject(payload, ['bundleId']));
+      const win = mainWindow();
+      const options = { title: 'Import reference videos (CSV)', properties: ['openFile' as const], filters: [{ name: 'CSV', extensions: ['csv'] }] };
+      const pick = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const file = pick.filePaths[0];
+      if (pick.canceled || !file) return { canceled: true };
+      let text: string;
+      try {
+        if ((await stat(file)).size > DEFAULT_MAX_BYTES) throw new IpcError('invalid_csv', ['too_large']);
+        text = (await readFile(file)).toString('utf8');
+      } catch (err) {
+        if (err instanceof IpcError) throw err;
+        throw new IpcError('file_unreadable');
+      }
+      return growthCall(() => ({ canceled: false, result: growth.importCsv(bundle.id, text), view: growth.view(bundle.id) }));
     },
 
     // ---- Platform sessions (shared by bundle sessions and the earlier gates' test profiles) ----

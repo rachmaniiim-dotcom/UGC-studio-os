@@ -70,6 +70,78 @@ export interface VideoSettings {
   quality: 'fast' | 'quality';
 }
 
+export interface Thresholds {
+  outlierThreshold: number;
+  windowDays: number;
+  recommendedBaseline: number;
+  minimumBaseline: number;
+  settleDays: number;
+  minViews: number;
+  staleDays: number;
+}
+
+export interface GrowthStrategy {
+  niche: string;
+  subNiches: string[];
+  audience: string;
+  region: string;
+  language: string;
+  desiredFollowers: string;
+  followReasons: string[];
+  styleConstraints: string;
+  dailyConcepts: number;
+  dailyVideos: number;
+  thresholds: Thresholds;
+}
+
+export interface MetricValue {
+  value: number;
+  exactness: 'exact' | 'rounded';
+}
+
+export interface ScoredReference {
+  id: string;
+  url: string;
+  platformVideoId: string;
+  creatorHandle: string;
+  publishedAt: string | null;
+  durationSeconds: number | null;
+  metrics: { views: MetricValue | null; likes: MetricValue | null; comments: MetricValue | null; shares: MetricValue | null; observedAt: string | null };
+  relevance: 'unrated' | 'relevant' | 'not_relevant';
+  pinned: boolean;
+  note: string;
+  source: string;
+  assessment: {
+    verdict: 'outlier' | 'not_outlier' | 'unverified' | 'missing_metrics';
+    ratio: number | null;
+    ageDays: number | null;
+    baseline: { level: 'recommended' | 'minimum' | 'insufficient'; sampleSize: number; medianViews: number | null };
+    engagementRate: number | null;
+    confidence: 'high' | 'medium' | 'low';
+    flags: string[];
+    reasons: string[];
+    shortlisted: boolean;
+  };
+  explanation: string;
+}
+
+export interface GrowthView {
+  strategy: GrowthStrategy;
+  strategySaved: boolean;
+  creators: Array<{ id: string; handle: string; note: string; videoCount: number }>;
+  references: ScoredReference[];
+  shortlist: string[];
+  computedAt: string;
+}
+
+export interface ImportResult {
+  added: number;
+  updated: number;
+  rejected: number;
+  ignoredColumns: number;
+  rows: Array<{ row: number; status: 'added' | 'updated' | 'rejected'; issues: string[] }>;
+}
+
 export interface GenerationJob {
   id: string;
   bundleId: string;
@@ -124,6 +196,15 @@ interface UgcBridge {
   startGeneration(bundleId: string): Promise<Result<GenerationJob>>;
   listGenerations(bundleId: string): Promise<Result<GenerationJob[]>>;
   revealVideo(jobId: string): Promise<Result<{ shown: boolean }>>;
+  growthView(bundleId: string): Promise<Result<GrowthView>>;
+  saveGrowthStrategy(bundleId: string, strategy: GrowthStrategy): Promise<Result<GrowthView>>;
+  addReferenceCreator(bundleId: string, handle: string, note: string): Promise<Result<GrowthView>>;
+  removeReferenceCreator(bundleId: string, creatorId: string): Promise<Result<GrowthView>>;
+  addReference(bundleId: string, reference: Record<string, unknown>): Promise<Result<{ outcome: 'added' | 'updated'; view: GrowthView }>>;
+  updateReference(bundleId: string, referenceId: string, patch: Record<string, unknown>): Promise<Result<GrowthView>>;
+  removeReference(bundleId: string, referenceId: string): Promise<Result<GrowthView>>;
+  importReferencesCsvText(bundleId: string, text: string): Promise<Result<{ result: ImportResult; view: GrowthView }>>;
+  importReferencesCsvFile(bundleId: string): Promise<Result<{ canceled: boolean; result?: ImportResult; view?: GrowthView }>>;
   getPlatform(): Promise<Result<PlatformInfo | null>>;
   listProfiles(): Promise<Result<Session[]>>;
   importCookies(profileId: string): Promise<Result<{ canceled: boolean; profile: Session }>>;
@@ -193,6 +274,12 @@ const MESSAGES: Record<string, [message: string, recovery: string]> = {
   job_in_progress: ['A video is already being generated for this account.', 'Wait for it to finish.'],
   daily_cap_reached: ['The daily limit for this account is reached.', 'Try again tomorrow.'],
   unknown_job: ['That video is no longer available.', 'Refresh the list.'],
+  invalid_strategy: ['Some strategy fields are invalid.', 'Fix the fields marked below.'],
+  invalid_reference: ['This reference can’t be saved.', 'Fix the fields marked below.'],
+  invalid_creator: ['That isn’t a valid TikTok handle or profile link.', 'Use @handle or https://www.tiktok.com/@handle.'],
+  unknown_reference: ['That reference no longer exists.', 'Refresh the screen.'],
+  invalid_csv: ['The CSV couldn’t be read.', 'Check it has a header row with at least a "url" column (see the template).'],
+  source_not_authorized: ['This research source isn’t authorized for automated retrieval.', 'Only sources with a recorded authorization can run.'],
   untrusted_sender: ['The request was refused.', 'Restart the app.'],
   internal_error: ['Something went wrong.', 'Try again; if it repeats, restart the app.'],
 };
@@ -210,6 +297,34 @@ const FIELD_MESSAGES: Record<string, string> = {
   invalid_aspect_ratio: 'Choose an aspect ratio.',
   invalid_duration: 'Choose a duration between 2 and 30 seconds.',
   invalid_quality: 'Choose a quality.',
+  invalid_niche: 'Enter the account’s niche.',
+  invalid_text: 'One of the text fields is too long or has invalid characters.',
+  invalid_list: 'Lists (sub-niches, follow reasons) take up to 20 short items.',
+  invalid_daily_targets: 'Daily targets must be whole numbers (concepts 0–50, videos 0–20).',
+  invalid_outlier_threshold: 'Outlier threshold must be between 1.5× and 100×.',
+  invalid_window: 'Research window must be 7–365 days.',
+  invalid_baseline: 'Baselines must be 3–100 videos, and the minimum can’t exceed the recommended.',
+  invalid_settle_days: 'Settle age must be 0–30 days.',
+  invalid_min_views: 'Minimum views must be a whole number.',
+  invalid_stale_days: 'Stale after must be 1–90 days.',
+  invalid_url: 'Use the full video link: https://www.tiktok.com/@handle/video/1234…',
+  short_link_unsupported: 'Short links (vm.tiktok.com, /t/…) can’t be used. Open the video and copy the full link from the address bar.',
+  creator_mismatch: 'The creator doesn’t match the handle in the link.',
+  invalid_published_at: 'Publication date must be YYYY-MM-DD.',
+  published_in_future: 'Publication date is in the future.',
+  invalid_video_duration: 'Duration must be 1–3600 seconds.',
+  invalid_views: 'Views: a number like 125000, 125.000 or 1.2M.',
+  invalid_likes: 'Likes: a number like 4300 or 4.3K.',
+  invalid_comments: 'Comments: a number like 210.',
+  invalid_shares: 'Shares: a number like 95.',
+  invalid_observed_at: 'Observed date must be YYYY-MM-DD.',
+  invalid_relevance: 'Relevance must be unrated, relevant or not_relevant.',
+  invalid_note: 'The note is too long (max 1000 characters).',
+  empty: 'The CSV is empty.',
+  missing_url_column: 'The header row needs a "url" column.',
+  too_many_rows: 'Import at most 2000 rows at a time.',
+  malformed: 'The CSV has an unclosed quote.',
+  too_large: 'The file is larger than 2 MB.',
   invalid_mode: 'Choose a production mode.',
 };
 

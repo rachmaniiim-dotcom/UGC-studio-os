@@ -21,6 +21,16 @@ contextBridge.exposeInMainWorld(
     startGeneration: (bundleId: string) => ipcRenderer.invoke('generation:start', { bundleId }),
     listGenerations: (bundleId: string) => ipcRenderer.invoke('generation:list', { bundleId }),
     revealVideo: (jobId: string) => ipcRenderer.invoke('generation:reveal', { jobId }),
+    // Growth Intelligence
+    growthView: (bundleId: string) => ipcRenderer.invoke('growth:view', { bundleId }),
+    saveGrowthStrategy: (bundleId: string, strategy: unknown) => ipcRenderer.invoke('growth:save-strategy', { bundleId, strategy }),
+    addReferenceCreator: (bundleId: string, handle: string, note: string) => ipcRenderer.invoke('growth:add-creator', { bundleId, handle, note }),
+    removeReferenceCreator: (bundleId: string, creatorId: string) => ipcRenderer.invoke('growth:remove-creator', { bundleId, creatorId }),
+    addReference: (bundleId: string, reference: unknown) => ipcRenderer.invoke('growth:add-reference', { bundleId, reference }),
+    updateReference: (bundleId: string, referenceId: string, patch: unknown) => ipcRenderer.invoke('growth:update-reference', { bundleId, referenceId, patch }),
+    removeReference: (bundleId: string, referenceId: string) => ipcRenderer.invoke('growth:remove-reference', { bundleId, referenceId }),
+    importReferencesCsvText: (bundleId: string, text: string) => ipcRenderer.invoke('growth:import-csv-text', { bundleId, text }),
+    importReferencesCsvFile: (bundleId: string) => ipcRenderer.invoke('growth:import-csv-file', { bundleId }),
     // Platform sessions
     getPlatform: () => ipcRenderer.invoke('poc:get-platform'),
     listProfiles: () => ipcRenderer.invoke('poc:list-profiles'),

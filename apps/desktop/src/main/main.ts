@@ -8,6 +8,7 @@ import { readRuntimeConfig } from './config.js';
 import { attachFlowDownloads } from './downloads.js';
 import { GenerationService } from './generation.js';
 import { GenerationStore } from './generation-store.js';
+import { GrowthService } from './growth.js';
 import { registerIpc } from './ipc.js';
 import { VideoLibrary } from './library.js';
 import { SyntheticVideoProvider } from './synthetic-provider.js';
@@ -133,6 +134,7 @@ if (securityCheck) {
       jobs,
       library,
       onSessionCreated: attachDownloads,
+      growth: new GrowthService(meta, bundles, log),
     });
     mainWindow = createMainWindow(join(here, '..', 'preload', 'preload.cjs'), config.synthetic, log);
     mainWindow.on('closed', () => (mainWindow = null));
