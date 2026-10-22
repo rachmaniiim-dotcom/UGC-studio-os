@@ -1,7 +1,23 @@
 import { expect, test } from '@playwright/test';
 import { join } from 'node:path';
 import { cookieEditorEntry, sessionCookieEntry, startSyntheticSite, type SyntheticSite } from '@ugc/test-fixtures';
-import { call, fusedElectron, importFile, launch, ok, openSite, profiles, quit, workDir, writeExport, type Profile, type Running } from './harness.js';
+import {
+  call,
+  createAccount,
+  fusedElectron,
+  importFile,
+  launch,
+  ok,
+  openSite,
+  profiles,
+  quit,
+  sessionOf,
+  waitForProtectedKey,
+  workDir,
+  writeExport,
+  type Profile,
+  type Running,
+} from './harness.js';
 
 // C2/C3: platform definitions and owner-confirmed status. The synthetic site
 // in "manual" mode stands in for a platform that forbids automation, so the
@@ -81,31 +97,31 @@ test('confirmation is withdrawn when the site deletes the session cookies, and a
   }
 });
 
-test('Kalodata definition (offline): its own profiles, its cookie scope only, no automated check', async () => {
-  // Synthetic data only, no window, no network. The synthetic cookies are outside
-  // Kalodata's scope, so nothing is loaded; this checks the boundary, not Kalodata.
+test('real mode, Kalodata session of an account (offline): its own cookie scope, no automated check, no browsing without a proxy', async () => {
+  // Synthetic data only, no window, no network. The synthetic cookies are
+  // outside Kalodata's scope, so nothing is loaded; this checks the boundary,
+  // not Kalodata.
   const dir = await workDir('kalodata-boundary');
   const userData = join(dir, 'userData');
   const synthetic = await launch({ userData, site, executablePath, allowUnencryptedSynthetic: false });
   const [s] = await profiles(synthetic);
   await quit(synthetic);
 
-  const run = await launch({ userData, site, executablePath, allowUnencryptedSynthetic: false, synthetic: false, env: { UGC_PLATFORM: 'kalodata' } });
+  const run = await launch({ userData, site, executablePath, allowUnencryptedSynthetic: false, synthetic: false });
   try {
-    expect(await ok(run, 'getPlatform')).toEqual({
-      id: 'kalodata',
-      displayName: 'Kalodata',
-      statusCheck: 'manual',
-      automation: 'not_permitted',
-      pages: ['home'],
-    });
-    const listed = await profiles(run);
-    expect(listed.map((p) => p.platformId)).toEqual(['kalodata', 'kalodata']);
-    expect(listed.map((p) => p.id)).not.toContain(s!.id);
-    // Profiles of another platform can't be used in this run.
+    // Real runs have no test profiles and no test platform.
+    expect(await ok(run, 'getPlatform')).toBeNull();
+    expect(await profiles(run)).toEqual([]);
     expect(await call(run, 'confirmStatus', s!.id, 'logged_in')).toEqual({ ok: false, error: { code: 'platform_not_active' } });
-    expect(await call(run, 'checkStatus', listed[0]!.id)).toEqual({ ok: false, error: { code: 'automated_check_not_permitted' } });
-    const imported = await importFile(run, listed[0]!.id, await writeExport(dir, 'synthetic', [sessionCookieEntry(), cookieEditorEntry({ name: 'p' })]));
+
+    const account = await createAccount(run, 'Boundary check');
+    const kalodata = sessionOf(account, 'kalodata');
+    expect(kalodata.platform).toEqual({ id: 'kalodata', displayName: 'Kalodata', statusCheck: 'manual', automation: 'not_permitted', pages: ['home'] });
+    expect(account.sessions.every((x) => x.platform.automation === 'not_permitted' && x.platform.statusCheck === 'manual')).toBe(true);
+    expect(await call(run, 'checkStatus', kalodata.id)).toEqual({ ok: false, error: { code: 'automated_check_not_permitted' } });
+    expect(await call(run, 'openSite', kalodata.id, 'home')).toEqual({ ok: false, error: { code: 'proxy_not_configured' } });
+    await waitForProtectedKey(userData);
+    const imported = await importFile(run, kalodata.id, await writeExport(dir, 'synthetic', [sessionCookieEntry(), cookieEditorEntry({ name: 'p' })]));
     expect(imported.lastImport).toMatchObject({ imported: 0, rejected: 2, reasons: { domain_out_of_scope: 2 } });
     expect(imported.status).toBe('never_configured');
   } finally {

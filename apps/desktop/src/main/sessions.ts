@@ -1,7 +1,6 @@
 import { session, type Session } from 'electron';
 import { hostInDomains, type Logger, type PlatformDefinition } from '@ugc/core';
 import type { RuntimeConfig } from './config.js';
-import { SYNTHETIC_PLATFORM_ID } from './platforms.js';
 
 const hardened = new WeakSet<Session>();
 
@@ -25,7 +24,8 @@ export function hardenSession(ses: Session, config: RuntimeConfig, platform: Pla
   });
 
   const fingerprint = config.siteCertFingerprint;
-  if (config.synthetic && fingerprint && platform?.id === SYNTHETIC_PLATFORM_ID) {
+  // Synthetic runs only: every platform there is a stand-in on the synthetic site's domain.
+  if (config.synthetic && fingerprint && platform) {
     const domains = platform.navigationDomains;
     ses.setCertificateVerifyProc((request, callback) => {
       // 0 = trust, -3 = use Chromium's normal verification result.

@@ -3,25 +3,30 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { join } from 'node:path';
-import { challengeMatches, chromiumProxyRules, validateProxyInput, type Logger, type PlatformDefinition, type ProxyEndpoint } from '@ugc/core';
+import { challengeMatches, chromiumProxyRules, validateProxyInput, type Logger, type ProxyEndpoint } from '@ugc/core';
 import type { RuntimeConfig } from './config.js';
-import { PROFILE_ID, type PocProfile, type ProfileStore, type ProxyState } from './profiles.js';
+import { PROFILE_ID, type AccountBundle, type BundleStore, type PocProfile, type ProfileStore, type ProxyState } from './profiles.js';
 import { protectedStorageAvailable, writeAtomic } from './session-sync.js';
 
 /**
- * Dedicated proxy per profile/bundle (Gate 3 proxy-isolation PoC).
+ * Dedicated proxy per Account Bundle (Gate 3).
  *
- * - Every partition of a profile uses its proxy: `fixed_servers`, no direct
- *   fallback, applied before any window, probe or request.
+ * - Every platform-session partition of a bundle uses the bundle's proxy:
+ *   `fixed_servers`, no direct fallback, applied at startup and on every
+ *   change before any window, probe or request.
+ * - A bundle without a proxy has its partitions pinned to a closed local port
+ *   (BLACKHOLE), so even an unexpected request fails instead of going direct.
  * - Credentials are sealed with safeStorage (DPAPI on Windows) and only
- *   decrypted to answer a proxy challenge: for the profile that owns the
- *   requesting session, and only if the challenge comes from that profile's
- *   proxy host and port. Site authentication (401) is never answered.
- * - A configured proxy must pass Test Proxy before the profile can browse;
- *   after a restart or a change it must pass again. If it fails, browsing is
- *   blocked, and an open window's requests fail rather than go direct.
+ *   decrypted to answer a proxy challenge: for the bundle that owns the
+ *   requesting window's session, and only if the challenge comes from that
+ *   bundle's proxy host and port. Site authentication (401) is never answered.
+ * - A bundle can browse only after its proxy passed Test Proxy in this run;
+ *   after a restart or a change it must pass again. Requests from an open
+ *   window fail (never go direct) if the proxy goes down.
  * - Test Proxy loads a reviewed IP-diagnostic endpoint (primary, then backup)
  *   in a hidden window on a throwaway in-memory partition with the same proxy.
+ *   A window is required: main-process requests can't authenticate to a proxy
+ *   in Electron 44 (S1, R-27).
  */
 
 export interface DiagnosticEndpoint {
@@ -31,7 +36,7 @@ export interface DiagnosticEndpoint {
 }
 
 /**
- * Reviewed public IP-echo endpoints (owner decision Q5): used only for proxy
+ * Reviewed public IP-echo endpoints (owner decision Q5), used only for proxy
  * diagnostics. Each returns nothing but the caller's IP. They see the proxy's
  * IP, never platform cookies (the test partition has none).
  */
@@ -46,6 +51,9 @@ export function syntheticDiagnosticEndpoints(origin: string): readonly Diagnosti
     { id: 'backup', url: `${origin}/ip-backup`, format: 'text-ip' },
   ];
 }
+
+/** Closed local port: where a bundle's traffic goes while it has no usable proxy (fails, never direct). */
+const BLACKHOLE: Electron.ProxyConfig = { mode: 'fixed_servers', proxyRules: 'http://127.0.0.1:9' };
 
 export class ProxyError extends Error {
   constructor(
@@ -64,7 +72,7 @@ export interface ProxyInput {
   readonly password?: unknown;
 }
 
-const CREDENTIALS_VERSION = 1;
+const CREDENTIALS_VERSION = 2;
 const PROBE_TIMEOUT_MS = 15_000;
 const MAX_AUTH_ATTEMPTS = 2;
 /** Failures of the proxy itself: trying the backup endpoint would not help. */
@@ -92,16 +100,16 @@ function sanitizeLoadError(err: unknown): string {
 
 const endpointOf = (state: ProxyState): ProxyEndpoint => ({ protocol: state.protocol, host: state.host, port: state.port });
 
-function credentialsPath(dir: string, profileId: string): string {
-  if (!PROFILE_ID.test(profileId)) throw new Error('invalid profile id');
-  return join(dir, `${profileId}.proxy`);
+function credentialsPath(dir: string, bundleId: string): string {
+  if (!PROFILE_ID.test(bundleId)) throw new Error('invalid bundle id');
+  return join(dir, `${bundleId}.proxy`);
 }
 
-/** Decrypts a profile's proxy credentials. Returns null if there are none or they don't verify. */
-export function readProxyCredentials(dir: string, profile: PocProfile): { username: string; password: string } | null {
+/** Decrypts a bundle's proxy credentials. Returns null if there are none or they don't verify. */
+export function readProxyCredentials(dir: string, bundle: AccountBundle): { username: string; password: string } | null {
   let sealed: Buffer;
   try {
-    sealed = readFileSync(credentialsPath(dir, profile.id));
+    sealed = readFileSync(credentialsPath(dir, bundle.id));
   } catch {
     return null;
   }
@@ -110,8 +118,7 @@ export function readProxyCredentials(dir: string, profile: PocProfile): { userna
     if (
       record['version'] !== CREDENTIALS_VERSION ||
       record['kind'] !== 'proxy-credentials' ||
-      record['profileId'] !== profile.id ||
-      record['partition'] !== profile.partition ||
+      record['bundleId'] !== bundle.id ||
       typeof record['username'] !== 'string' ||
       typeof record['password'] !== 'string'
     ) {
@@ -125,9 +132,9 @@ export function readProxyCredentials(dir: string, profile: PocProfile): { userna
 
 export interface ProxyServiceDeps {
   readonly dir: string;
-  readonly store: ProfileStore;
+  readonly bundles: BundleStore;
+  readonly sessions: ProfileStore;
   readonly config: RuntimeConfig;
-  readonly platform: PlatformDefinition;
   readonly log: Logger;
   readonly sessionOf: (profile: PocProfile) => Session;
   /** Restrictions for the throwaway test partition (no permissions; synthetic certificate trust in tests). */
@@ -137,7 +144,7 @@ export interface ProxyServiceDeps {
 
 export class ProxyService {
   readonly #deps: ProxyServiceDeps;
-  /** Which profile a session belongs to: its partitions and its throwaway test sessions. */
+  /** Which bundle a session belongs to: its platform partitions and its throwaway test sessions. */
   readonly #owners = new Map<Session, string>();
   readonly #authAttempts = new Map<number, number>();
   readonly #authGaveUp = new Set<number>();
@@ -147,36 +154,42 @@ export class ProxyService {
     app.on('login', this.#onLogin);
   }
 
-  /** A proxy is required for real platforms always, and in synthetic mode once one is configured. */
-  required(profile: PocProfile): boolean {
-    return profile.proxy !== null || !this.#deps.config.synthetic;
-  }
-
-  /** At startup, before anything else touches a partition: apply each configured proxy; each must be re-tested. */
+  /** At startup, before anything else touches a partition: apply every bundle's proxy (or the blackhole). */
   async start(): Promise<void> {
-    for (const profile of this.#deps.store.list().filter((p) => p.platformId === this.#deps.platform.id)) {
-      const ses = this.#deps.sessionOf(profile);
-      this.#owners.set(ses, profile.id);
-      if (!profile.proxy) continue;
-      await this.#apply(ses, endpointOf(profile.proxy));
-      this.#deps.store.update(profile.id, { proxy: { ...profile.proxy, status: 'untested', observedIp: null, endpoint: null, error: null } });
+    for (const bundle of this.#deps.bundles.list()) {
+      if (bundle.proxy) {
+        // Must pass Test Proxy again in this run; when it last passed is kept.
+        this.#deps.bundles.update(bundle.id, { proxy: { ...bundle.proxy, status: 'untested', observedIp: null, endpoint: null, error: null } });
+      }
+      for (const profile of this.#deps.sessions.forBundle(bundle.id)) await this.attachSession(profile);
     }
   }
 
-  /** Sets, replaces or (synthetic only) removes a profile's proxy. The new proxy must be tested before browsing. */
-  async configure(profile: PocProfile, input: ProxyInput | null): Promise<PocProfile> {
-    const { dir, store, log, config } = this.#deps;
+  /** Puts a bundle session's partition behind its bundle's proxy (or the blackhole). Call before the partition is used. */
+  async attachSession(profile: PocProfile): Promise<void> {
+    if (!profile.bundleId) return;
+    const bundle = this.#deps.bundles.get(profile.bundleId);
     const ses = this.#deps.sessionOf(profile);
-    this.#owners.set(ses, profile.id);
-    if (input === null) {
-      if (!config.synthetic) throw new ProxyError('proxy_required');
-      rmSync(credentialsPath(dir, profile.id), { force: true });
-      await this.#reset(ses, { mode: 'direct' });
-      log.info('proxy_removed', { profileId: profile.id });
-      return store.update(profile.id, { proxy: null });
-    }
+    this.#owners.set(ses, profile.bundleId);
+    await ses.setProxy(bundle?.proxy ? { mode: 'fixed_servers', proxyRules: chromiumProxyRules(endpointOf(bundle.proxy)) } : BLACKHOLE);
+  }
 
-    const validated = validateProxyInput(input);
+  /**
+   * Sets or replaces a bundle's proxy. With `keepCredentials` and no new
+   * password, the saved credentials are kept (re-sealed, never returned).
+   * The new proxy must pass Test Proxy before the bundle can browse.
+   */
+  async configure(bundle: AccountBundle, input: ProxyInput, keepCredentials: boolean): Promise<AccountBundle> {
+    const { dir, bundles, sessions, log } = this.#deps;
+    const noNewPassword = input.password === undefined || input.password === null || input.password === '';
+    let raw = input;
+    if (keepCredentials && noNewPassword) {
+      const saved = bundle.proxy?.hasCredentials ? readProxyCredentials(dir, bundle) : null;
+      if (!saved) throw new ProxyError('credentials_missing');
+      const username = input.username === undefined || input.username === '' ? saved.username : input.username;
+      raw = { ...input, username, password: saved.password };
+    }
+    const validated = validateProxyInput(raw);
     if (!validated.ok) throw new ProxyError('invalid_proxy', validated.issues);
     const { endpoint, credentials } = validated.settings;
     if (credentials) {
@@ -185,20 +198,27 @@ export class ProxyService {
       const record = JSON.stringify({
         version: CREDENTIALS_VERSION,
         kind: 'proxy-credentials',
-        profileId: profile.id,
-        partition: profile.partition,
+        bundleId: bundle.id,
         username: credentials.username.reveal(),
         password: credentials.password.reveal(),
       });
-      writeAtomic(credentialsPath(dir, profile.id), safeStorage.encryptString(record));
+      writeAtomic(credentialsPath(dir, bundle.id), safeStorage.encryptString(record));
     } else {
-      rmSync(credentialsPath(dir, profile.id), { force: true });
+      rmSync(credentialsPath(dir, bundle.id), { force: true });
     }
-    // Close the profile's open windows: they were opened with the previous proxy and must not keep browsing untested.
-    for (const win of BrowserWindow.getAllWindows()) if (win.webContents.session === ses) win.destroy();
-    await this.#reset(ses, { mode: 'fixed_servers', proxyRules: chromiumProxyRules(endpoint) });
-    log.info('proxy_configured', { profileId: profile.id, protocol: endpoint.protocol, hasCredentials: credentials !== null });
-    return store.update(profile.id, {
+
+    const rules = { mode: 'fixed_servers' as const, proxyRules: chromiumProxyRules(endpoint) };
+    for (const profile of sessions.forBundle(bundle.id)) {
+      const ses = this.#deps.sessionOf(profile);
+      this.#owners.set(ses, bundle.id);
+      // Windows opened with the previous proxy must not keep browsing untested.
+      for (const win of BrowserWindow.getAllWindows()) if (win.webContents.session === ses) win.destroy();
+      await ses.setProxy(rules);
+      await ses.closeAllConnections();
+      await ses.clearAuthCache();
+    }
+    log.info('proxy_configured', { bundleId: bundle.id, protocol: endpoint.protocol, hasCredentials: credentials !== null });
+    return bundles.update(bundle.id, {
       proxy: {
         protocol: endpoint.protocol,
         host: endpoint.host,
@@ -208,31 +228,40 @@ export class ProxyService {
         observedIp: null,
         endpoint: null,
         testedAt: null,
+        lastPassedAt: null,
         error: null,
       },
     });
   }
 
-  /** Throws unless the profile may browse: no proxy needed, or its proxy passed a test (testing it now if needed). */
+  /**
+   * Throws unless the session may reach the network: a bundle session needs
+   * its bundle's proxy to have passed (tested now if needed). Bundle-less
+   * test profiles of earlier gates may go direct in synthetic runs only.
+   */
   async ensureReady(profile: PocProfile): Promise<void> {
-    if (!this.required(profile)) return;
-    if (!profile.proxy) throw new ProxyError('proxy_not_configured');
-    if (profile.proxy.status === 'ok') return;
-    const tested = await this.test(profile);
+    if (!profile.bundleId) {
+      if (this.#deps.config.synthetic) return;
+      throw new ProxyError('proxy_not_configured');
+    }
+    const bundle = this.#deps.bundles.get(profile.bundleId);
+    if (!bundle?.proxy) throw new ProxyError('proxy_not_configured');
+    if (bundle.proxy.status === 'ok') return;
+    const tested = await this.test(bundle);
     if (tested.proxy?.status !== 'ok') throw new ProxyError('proxy_not_ready');
   }
 
-  /** Test Proxy: observed public IP through the profile's proxy, or a sanitized error code. */
-  async test(profile: PocProfile): Promise<PocProfile> {
-    const { store, log, endpoints } = this.#deps;
-    if (!profile.proxy) throw new ProxyError('proxy_not_configured');
+  /** Test Proxy: observed public IP through the bundle's proxy, or a sanitized error code. */
+  async test(bundle: AccountBundle): Promise<AccountBundle> {
+    const { bundles, log, endpoints } = this.#deps;
+    if (!bundle.proxy) throw new ProxyError('proxy_not_configured');
     const temp = session.fromPartition(`ugc-proxytest-${randomUUID()}`);
     this.#deps.hardenTestSession(temp);
-    this.#owners.set(temp, profile.id);
+    this.#owners.set(temp, bundle.id);
     let result: { observedIp: string; endpoint: 'primary' | 'backup' } | null = null;
     let error = 'no_endpoint';
     try {
-      await this.#apply(temp, endpointOf(profile.proxy));
+      await temp.setProxy({ mode: 'fixed_servers', proxyRules: chromiumProxyRules(endpointOf(bundle.proxy)) });
       for (const endpoint of endpoints) {
         const outcome = await this.#probe(temp, endpoint);
         if ('ip' in outcome) {
@@ -248,18 +277,19 @@ export class ProxyService {
       await temp.closeAllConnections().catch(() => undefined);
       await temp.clearStorageData().catch(() => undefined);
     }
-    const current = store.get(profile.id) ?? profile;
+    const now = new Date().toISOString();
     const proxy: ProxyState = {
-      ...profile.proxy,
+      ...bundle.proxy,
       status: result ? 'ok' : 'failed',
       observedIp: result?.observedIp ?? null,
       endpoint: result?.endpoint ?? null,
-      testedAt: new Date().toISOString(),
+      testedAt: now,
+      lastPassedAt: result ? now : bundle.proxy.lastPassedAt,
       error: result ? null : error,
     };
     // The proxy host and observed IP link accounts: they are kept out of logs.
-    log.info('proxy_tested', { profileId: profile.id, status: proxy.status, endpoint: proxy.endpoint, error: proxy.error });
-    return store.update(current.id, { proxy });
+    log.info('proxy_tested', { bundleId: bundle.id, status: proxy.status, endpoint: proxy.endpoint, error: proxy.error });
+    return bundles.update(bundle.id, { proxy });
   }
 
   /** Called for every site window: resets the proxy-auth retry budget after a successful load. */
@@ -269,16 +299,6 @@ export class ProxyService {
       this.#authAttempts.delete(contents.id);
       this.#authGaveUp.delete(contents.id);
     });
-  }
-
-  async #apply(ses: Session, endpoint: ProxyEndpoint): Promise<void> {
-    await ses.setProxy({ mode: 'fixed_servers', proxyRules: chromiumProxyRules(endpoint) });
-  }
-
-  async #reset(ses: Session, proxy: Electron.ProxyConfig): Promise<void> {
-    await ses.setProxy(proxy);
-    await ses.closeAllConnections();
-    await ses.clearAuthCache();
   }
 
   async #probe(temp: Session, endpoint: DiagnosticEndpoint): Promise<{ ip: string } | { error: string }> {
@@ -310,8 +330,7 @@ export class ProxyService {
       } finally {
         clearTimeout(timer);
       }
-      if (this.#authGaveUp.has(contents.id)) return { error: 'proxy_auth_failed' };
-      if (status === 407) return { error: 'proxy_auth_failed' };
+      if (this.#authGaveUp.has(contents.id) || status === 407) return { error: 'proxy_auth_failed' };
       if (status !== 200) return { error: 'endpoint_http_error' };
       const text = String(await contents.executeJavaScript('document.body ? document.body.innerText : ""')).trim();
       let ip = text;
@@ -340,11 +359,11 @@ export class ProxyService {
     // Site (401) challenges get Electron's default: cancelled. Proxy credentials are never offered to a site.
     if (!authInfo.isProxy) return;
     event.preventDefault();
-    // Requests without a webContents (main-process net/fetch) can't be tied to one profile: refused.
-    const profileId = contents ? this.#owners.get(contents.session) : undefined;
-    const profile = profileId ? this.#deps.store.get(profileId) : undefined;
-    if (!contents || !profile?.proxy?.hasCredentials || !challengeMatches(endpointOf(profile.proxy), authInfo)) {
-      this.#deps.log.warn('proxy_auth_refused', { profileId: profileId ?? null, reason: contents ? 'no_matching_proxy' : 'no_webcontents' });
+    // Requests without a webContents (main-process net/fetch) can't be tied to one bundle: refused.
+    const bundleId = contents ? this.#owners.get(contents.session) : undefined;
+    const bundle = bundleId ? this.#deps.bundles.get(bundleId) : undefined;
+    if (!contents || !bundle?.proxy?.hasCredentials || !challengeMatches(endpointOf(bundle.proxy), authInfo)) {
+      this.#deps.log.warn('proxy_auth_refused', { bundleId: bundleId ?? null, reason: contents ? 'no_matching_proxy' : 'no_webcontents' });
       callback();
       return;
     }
@@ -352,13 +371,13 @@ export class ProxyService {
     this.#authAttempts.set(contents.id, attempts);
     if (attempts > MAX_AUTH_ATTEMPTS) {
       this.#authGaveUp.add(contents.id);
-      this.#deps.log.warn('proxy_auth_failed', { profileId: profile.id, attempts: attempts - 1 });
+      this.#deps.log.warn('proxy_auth_failed', { bundleId: bundle.id, attempts: attempts - 1 });
       callback();
       return;
     }
-    const credentials = readProxyCredentials(this.#deps.dir, profile);
+    const credentials = readProxyCredentials(this.#deps.dir, bundle);
     if (!credentials) {
-      this.#deps.log.warn('proxy_auth_refused', { profileId: profile.id, reason: 'credentials_unavailable' });
+      this.#deps.log.warn('proxy_auth_refused', { bundleId: bundle.id, reason: 'credentials_unavailable' });
       callback();
       return;
     }

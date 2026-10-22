@@ -1,0 +1,94 @@
+import { ACCOUNT_STATUS, MODE_LABELS, SESSION_STATUS, type Account } from './bridge.js';
+import { Badge } from './Badge.js';
+
+export function Dashboard(props: { accounts: Account[]; onAdd: () => void; onEdit: (id: string) => void }): React.JSX.Element {
+  const { accounts } = props;
+  const counts = {
+    total: accounts.length,
+    operational: accounts.filter((a) => a.status === 'operational').length,
+    attention: accounts.filter((a) => a.status === 'attention' || a.status === 'proxy_check_needed').length,
+    draft: accounts.filter((a) => a.status === 'draft').length,
+  };
+  return (
+    <section className="dashboard" aria-label="Accounts">
+      <div className="section-head">
+        <div>
+          <h2>Accounts</h2>
+          <p className="muted">
+            {counts.total} account{counts.total === 1 ? '' : 's'} · {counts.operational} operational · {counts.attention} need attention · {counts.draft}{' '}
+            draft
+          </p>
+        </div>
+        <button type="button" className="primary" onClick={props.onAdd}>
+          + Add account
+        </button>
+      </div>
+      {accounts.length === 0 ? (
+        <div className="empty">
+          <p>No accounts yet.</p>
+          <p className="muted">Each account is one TikTok identity with its own dedicated proxy and its own isolated platform sessions.</p>
+          <button type="button" className="primary" onClick={props.onAdd}>
+            Add your first account
+          </button>
+        </div>
+      ) : (
+        <table className="accounts">
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th>Mode</th>
+              <th>Status</th>
+              <th>Proxy</th>
+              <th>Sessions</th>
+              <th aria-label="Actions" />
+            </tr>
+          </thead>
+          <tbody>
+            {accounts.map((a) => (
+              <tr key={a.id} data-account-id={a.id}>
+                <td>
+                  <strong>{a.displayName}</strong>
+                  <div className="muted mono small">{a.id.slice(0, 8)}</div>
+                </td>
+                <td>{MODE_LABELS[a.mode]}</td>
+                <td>
+                  <Badge tone={ACCOUNT_STATUS[a.status].tone} testId="account-status" value={a.status}>
+                    {ACCOUNT_STATUS[a.status].label}
+                  </Badge>
+                </td>
+                <td className="small">
+                  {a.proxy ? (
+                    <>
+                      <div className="mono">
+                        {a.proxy.host}:{a.proxy.port}
+                      </div>
+                      <div className="muted">
+                        {a.proxy.status === 'ok' ? `IP ${a.proxy.observedIp}` : a.proxy.status === 'failed' ? 'Test failed' : 'Not tested in this session'}
+                      </div>
+                    </>
+                  ) : (
+                    <span className="muted">Not set</span>
+                  )}
+                </td>
+                <td>
+                  <div className="chips">
+                    {a.sessions.map((s) => (
+                      <Badge key={s.id} tone={SESSION_STATUS[s.status]?.tone ?? 'muted'} title={SESSION_STATUS[s.status]?.label ?? s.status}>
+                        {s.platform.displayName}
+                      </Badge>
+                    ))}
+                  </div>
+                </td>
+                <td>
+                  <button type="button" onClick={() => props.onEdit(a.id)}>
+                    Open
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}

@@ -30,6 +30,12 @@ Cookies-journal
 Local State
 Login Data
 poc-profiles.json
+poc-profiles.json.migrated
+*.db
+*.db-journal
+*.db-wal
+proxy-secrets/
+*.proxy
 logs/
 *.log
 *.tmp

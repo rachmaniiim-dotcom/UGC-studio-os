@@ -2,7 +2,7 @@
 
 Multi-account AI UGC research, production and publishing platform. Windows desktop first (Electron); a Linux automation backend later.
 
-**Current stage: pre-Gate-2 hardening done; Gate 2 (real Kalodata session test) awaits authorization.** Only synthetic data has been used. Each run has one platform: the synthetic site in tests, or a reviewed built-in definition selected with `UGC_PLATFORM` (unpackaged builds only). Cookies outside that platform's domains are rejected.
+**Current stage: Gate 3, Account Setup and Session Manager.** Account Bundles (one TikTok identity each) with a dedicated proxy and isolated sessions for TikTok, Google Flow, Kalodata (optional) and Shopee (optional). Automated tests use synthetic data only. See [`docs/gate-3/GATE3_IMPLEMENTATION_REPORT.md`](docs/gate-3/GATE3_IMPLEMENTATION_REPORT.md).
 
 - Spec: `MASTER_SPEC.md` (kept by the product owner)
 - Architecture: [`docs/gate-0/ARCHITECTURE_REPORT.md`](docs/gate-0/ARCHITECTURE_REPORT.md)
@@ -33,6 +33,7 @@ pnpm test:e2e           # Playwright driving real Electron (needs a desktop sess
                         # Windows: set UGC_E2E_NATIVE_DIALOG=1 to also drive the real file dialog (takes focus)
 pnpm check:secrets      # scans the repo for secrets, synthetic canaries and session-data paths (also runs as a pre-commit hook)
 pnpm security-check     # local leak check of the app's profiles: counts and locations only, never values (close the app first)
+node apps/desktop/scripts/run-app.mjs   # start the app for real use (refuses unsafe data folders or an unfused binary)
 ```
 
 In a headless Linux container running as root, use `scripts/e2e-container.sh` instead of `pnpm test:e2e`. It runs the suite as an unprivileged user under Xvfb, so the Chromium sandbox stays on.

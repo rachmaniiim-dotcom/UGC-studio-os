@@ -231,7 +231,7 @@ test('rollback: an older snapshot copied back is refused; restoring all three co
     await quit(first);
   }
   const f = files(userData, a!.id);
-  const meta = join(userData, 'poc-profiles.json');
+  const meta = join(userData, 'ugc.db');
   mkdirSync(backup);
   copyFileSync(f.record, join(backup, 'sealed'));
   copyFileSync(f.revision, join(backup, 'rev'));

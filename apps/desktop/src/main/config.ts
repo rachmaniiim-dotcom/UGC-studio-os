@@ -14,11 +14,11 @@ export interface RuntimeConfig {
   readonly allowUnencryptedSyntheticCookies: boolean;
   readonly userDataOverride: string | null;
   /**
-   * The platform this run's profiles belong to (see platforms.ts). Synthetic
-   * mode always uses the synthetic site; otherwise an unpackaged build reads
-   * UGC_PLATFORM. Null means no platform: the app opens with no profiles.
+   * Synthetic only: seed the two bundle-less test profiles of Gates 1–2 (the
+   * regression suites use them). Account-bundle tests turn it off with
+   * UGC_POC_SEED_PROFILES=0. Real runs never seed.
    */
-  readonly platformId: string | null;
+  readonly seedLegacyProfiles: boolean;
   /** Synthetic only: make the synthetic platform manual-status / no-automation, like a real restricted platform. */
   readonly syntheticManualStatus: boolean;
   /**
@@ -29,7 +29,6 @@ export interface RuntimeConfig {
   readonly requirePersistedKey: boolean;
 }
 
-const PLATFORM_ID = /^[a-z][a-z0-9-]{1,31}$/;
 const SITE_ORIGIN = /^https:\/\/[a-z0-9-]+\.ugc-poc\.test(:\d{1,5})?$/;
 
 /** Development-only switches come from the environment and are ignored when packaged. */
@@ -44,7 +43,7 @@ export function readRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
     siteCertFingerprint: synthetic && fingerprint.startsWith('sha256/') ? fingerprint : null,
     allowUnencryptedSyntheticCookies: synthetic && env['UGC_POC_ALLOW_UNENCRYPTED_SYNTHETIC'] === '1',
     userDataOverride: dev && env['UGC_POC_USER_DATA'] ? env['UGC_POC_USER_DATA'] : null,
-    platformId: synthetic ? 'synthetic-poc' : dev && PLATFORM_ID.test(env['UGC_PLATFORM'] ?? '') ? (env['UGC_PLATFORM'] as string) : null,
+    seedLegacyProfiles: synthetic && env['UGC_POC_SEED_PROFILES'] !== '0',
     syntheticManualStatus: synthetic && env['UGC_POC_STATUS_MODE'] === 'manual',
     requirePersistedKey: process.platform === 'win32' && (!synthetic || env['UGC_POC_REQUIRE_PERSISTED_KEY'] === '1'),
   };

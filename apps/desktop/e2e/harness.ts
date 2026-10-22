@@ -40,20 +40,35 @@ export interface Profile {
     saveError: string | null;
     restore: null | { at: string; state: string; count: number; error: string | null };
   };
-  proxy: null | {
-    protocol: string;
-    host: string;
-    port: number;
-    hasCredentials: boolean;
-    status: string;
-    observedIp: string | null;
-    endpoint: string | null;
-    testedAt: string | null;
-    error: string | null;
-  };
+  bundleId: string | null;
+  optional: boolean;
 }
 
-export type Result<T> = { ok: true; data: T } | { ok: false; error: { code: string } };
+export interface ProxyView {
+  protocol: string;
+  host: string;
+  port: number;
+  hasCredentials: boolean;
+  status: string;
+  observedIp: string | null;
+  endpoint: string | null;
+  testedAt: string | null;
+  lastPassedAt: string | null;
+  error: string | null;
+}
+
+export type AccountSession = Profile & { platform: { id: string; displayName: string; statusCheck: string; automation: string; pages: string[] } };
+
+export interface Account {
+  id: string;
+  displayName: string;
+  mode: string;
+  status: string;
+  proxy: ProxyView | null;
+  sessions: AccountSession[];
+}
+
+export type Result<T> = { ok: true; data: T } | { ok: false; error: { code: string; details?: string[] } };
 
 export interface Running {
   app: ElectronApplication;
@@ -80,6 +95,8 @@ export interface LaunchOptions {
   env?: Record<string, string>;
   /** false: a non-synthetic run (no site mapping, no test certificate). Default true. */
   synthetic?: boolean;
+  /** false: don't seed the two bundle-less test profiles of Gates 1–2. Default true. */
+  seedProfiles?: boolean;
 }
 
 export async function launch(options: LaunchOptions): Promise<Running> {
@@ -92,6 +109,7 @@ export async function launch(options: LaunchOptions): Promise<Running> {
     env['UGC_POC_SITE_CERT_FP'] = options.site.certificateFingerprint;
   }
   if (options.allowUnencryptedSynthetic ?? true) env['UGC_POC_ALLOW_UNENCRYPTED_SYNTHETIC'] = '1';
+  if (options.seedProfiles === false) env['UGC_POC_SEED_PROFILES'] = '0';
   Object.assign(env, options.env ?? {});
 
   const app = await electron.launch({
@@ -100,7 +118,7 @@ export async function launch(options: LaunchOptions): Promise<Running> {
     ...(options.executablePath ? { executablePath: options.executablePath } : {}),
   });
   const ui = await app.firstWindow();
-  await ui.waitForSelector('.profile');
+  await ui.waitForSelector('[data-app-ready]');
   return { app, ui, responses: [] };
 }
 
@@ -122,6 +140,24 @@ export async function ok<T>(run: Running, method: string, ...args: unknown[]): P
 export async function profiles(run: Running): Promise<Profile[]> {
   return ok<Profile[]>(run, 'listProfiles');
 }
+
+export async function accounts(run: Running): Promise<Account[]> {
+  return ok<Account[]>(run, 'listAccounts');
+}
+
+export async function createAccount(run: Running, displayName: string, mode = 'affiliate_ugc'): Promise<Account> {
+  return ok<Account>(run, 'createAccount', displayName, mode);
+}
+
+/** The account's session for `platformId` (e.g. 'tiktok'). */
+export function sessionOf(account: Account, platformId: string): AccountSession {
+  const s = account.sessions.find((x) => x.platformId === platformId);
+  if (!s) throw new Error(`no ${platformId} session`);
+  return s;
+}
+
+/** A synthetic Cookie-Editor entry scoped to a platform's synthetic stand-in host (e.g. tiktok.ugc-poc.test). */
+export const syntheticHost = (platformId: string): string => `${platformId}.ugc-poc.test`;
 
 /** Makes the next native file dialog return `file` (the main process still reads it). */
 export async function stubOpenDialog(run: Running, file: string): Promise<void> {
@@ -260,7 +296,8 @@ export interface SecurityCheckRun {
     environment: Record<string, unknown>;
     profiles: Array<{ label: string; jarCookies: number; needles: number; snapshot: string; cookieDb: null | { rows: number; plaintextRows: number; prefixes: Record<string, number> } }>;
     scan: { files: number };
-    findings: Array<{ check: string; severity: string; count: number; where?: string }>;
+    findings: Array<{ check: string; severity: string; count: number; where?: string; matched?: string[] }>;
+    accounts: Array<{ label: string; proxyCredentials: number }>;
   };
 }
 

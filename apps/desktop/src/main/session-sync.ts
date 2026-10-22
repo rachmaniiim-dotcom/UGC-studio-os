@@ -183,7 +183,8 @@ export function inspectSnapshot(dir: string, profile: PocProfile, cookieDomains:
 export interface SessionSyncDeps {
   readonly dir: string;
   readonly store: ProfileStore;
-  readonly platform: PlatformDefinition;
+  /** The definition for a session's platform; undefined for platforms this run doesn't know (left alone). */
+  readonly platformOf: (profile: PocProfile) => PlatformDefinition | undefined;
   readonly log: Logger;
   readonly sessionOf: (profile: PocProfile) => Session;
 }
@@ -203,7 +204,7 @@ export class SessionSync {
   }
 
   #profiles(): PocProfile[] {
-    return this.#deps.store.list().filter((p) => p.platformId === this.#deps.platform.id);
+    return this.#deps.store.list().filter((p) => this.#deps.platformOf(p) !== undefined);
   }
 
   /** Restores every profile's snapshot, then starts watching its jar. Call before any window or IPC exists. */
@@ -272,10 +273,18 @@ export class SessionSync {
     this.#timers.set(profileId, { timer, due });
   }
 
+  /** Starts watching a session created after start() (a new bundle's sessions). */
+  watch(profile: PocProfile): void {
+    this.#digests.set(profile.id, digestOf([]));
+    this.#watch(profile);
+  }
+
   #watch(profile: PocProfile): void {
     if (this.#watched.has(profile.id)) return;
+    const platform = this.#deps.platformOf(profile);
+    if (!platform) return;
     this.#watched.add(profile.id);
-    const domains = this.#deps.platform.cookieDomains;
+    const domains = platform.cookieDomains;
     // The listener never reads cookie.value.
     this.#deps.sessionOf(profile).cookies.on('changed', (_event, cookie, _cause, removed) => {
       if (this.#stopped || this.#suspended.has(profile.id)) return;
@@ -288,8 +297,9 @@ export class SessionSync {
 
   async #snapshot(profileId: string): Promise<void> {
     const profile = this.#deps.store.get(profileId);
-    if (!profile) return;
-    const domains = this.#deps.platform.cookieDomains;
+    const platform = profile ? this.#deps.platformOf(profile) : undefined;
+    if (!profile || !platform) return;
+    const domains = platform.cookieDomains;
     let live: NormalizedCookie[];
     try {
       const jar = await this.#deps.sessionOf(profile).cookies.get({});
@@ -388,7 +398,7 @@ export class SessionSync {
 
   /** Returns null when there is nothing to restore; throws RestoreFailure on any problem. */
   async #restore(profile: PocProfile): Promise<{ revision: number; cookies: readonly NormalizedCookie[] } | null> {
-    const decoded = readSnapshot(this.#deps.dir, profile, this.#deps.platform.cookieDomains);
+    const decoded = readSnapshot(this.#deps.dir, profile, this.#deps.platformOf(profile)?.cookieDomains ?? []);
     if (!decoded) return null;
     const ses = this.#deps.sessionOf(profile);
     const set: Array<{ url: string; name: string }> = [];

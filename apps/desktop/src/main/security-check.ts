@@ -4,7 +4,7 @@ import { join, relative, resolve, sep } from 'node:path';
 import type { Logger } from '@ugc/core';
 import { cookieEncryptionFuseEnabled } from './fuses.js';
 import { cookieDomainsFor } from './platforms.js';
-import { ProfileStore, type PocProfile } from './profiles.js';
+import { BundleStore, MetadataDb, ProfileStore, type AccountBundle, type PocProfile } from './profiles.js';
 import { readProxyCredentials } from './proxy.js';
 import { inspectSnapshot, protectedStorageAvailable } from './session-sync.js';
 
@@ -151,8 +151,15 @@ export async function runSecurityCheck({ userData, restoreDir, scanRoots, log }:
   for (const root of roots) if (underSyncedFolder(root.path)) add({ check: 'in_cloud_synced_folder', severity: 'medium', count: 1, where: root.label });
 
   let profiles: readonly PocProfile[] = [];
+  let bundles: readonly AccountBundle[] = [];
   try {
-    profiles = new ProfileStore(join(userData, 'poc-profiles.json'), null, { readOnly: true }).list();
+    const meta = MetadataDb.open(userData, { readOnly: true });
+    bundles = new BundleStore(meta).list();
+    const names = new Map(bundles.map((b) => [b.id, b.displayName]));
+    // Sessions are labelled "<account> · <platform>"; labels are names the owner chose, not secrets.
+    profiles = new ProfileStore(meta)
+      .list()
+      .map((p) => (p.bundleId ? { ...p, label: `${names.get(p.bundleId) ?? 'Account'} · ${p.label}` } : p));
   } catch {
     add({ check: 'profile_store_unreadable', severity: 'medium', count: 1 });
   }
@@ -205,11 +212,13 @@ export async function runSecurityCheck({ userData, restoreDir, scanRoots, log }:
   }
 
   // Proxy credentials are secrets too: search for them like cookie values.
-  for (const [i, p] of profiles.entries()) {
-    const credentials = protectedStorage ? readProxyCredentials(join(userData, 'proxy-secrets'), p) : null;
+  const bundleReports = bundles.map((b) => ({ label: b.displayName, proxyCredentials: 0 }));
+  for (const [i, b] of bundles.entries()) {
+    const credentials = protectedStorage && b.proxy?.hasCredentials ? readProxyCredentials(join(userData, 'proxy-secrets'), b) : null;
+    if (b.proxy?.hasCredentials && !credentials) add({ check: 'proxy_credentials_unreadable', severity: 'medium', count: 1, where: b.displayName });
     if (!credentials) continue;
     for (const [kind, value] of [['proxy-username', credentials.username], ['proxy-password', credentials.password]] as const) {
-      addNeedle(needles, value, p.label, `${p.label} ${kind}`) ? profileReports[i]!.needles++ : profileReports[i]!.skippedShort++;
+      if (addNeedle(needles, value, b.displayName, `${b.displayName} ${kind}`)) bundleReports[i]!.proxyCredentials++;
     }
   }
 
@@ -283,6 +292,7 @@ export async function runSecurityCheck({ userData, restoreDir, scanRoots, log }:
       safeStorageAvailable: safeStorage.isEncryptionAvailable(),
     },
     profiles: profileReports,
+    accounts: bundleReports,
     scan,
     findings,
   };

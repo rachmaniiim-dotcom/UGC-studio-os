@@ -1,8 +1,22 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { isSessionStatus, type EntryIssueCode, type FileErrorCode, type SessionStatus } from '@ugc/core';
+import { existsSync, readFileSync, renameSync } from 'node:fs';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import {
+  isSessionStatus,
+  type EntryIssueCode,
+  type FileErrorCode,
+  type ProductionMode,
+  type SessionStatus,
+} from '@ugc/core';
 import type { BrowserLoadIssue } from './electron-cookies.js';
+
+/**
+ * Gate 3 metadata store (SQLite, `ugc.db` in userData). Only non-secret
+ * state lives here: names, modes, statuses, counts, proxy host/port/status.
+ * Cookies, snapshots and proxy credentials are sealed separately
+ * (session-sync.ts, proxy.ts) and never written to this database.
+ */
 
 /** Non-secret summary of the last import. Never holds cookie names or values. */
 export interface ImportSummary {
@@ -29,24 +43,19 @@ export interface SessionRestoreSummary {
 }
 
 /**
- * Non-secret state of the profile's session-cookie snapshot (C1). `revision`
- * is the last revision durably written; it only grows and is one of the
- * three copies a restore checks against rollback.
+ * Non-secret state of the session-cookie snapshot (C1). `revision` is the
+ * last revision durably written; it only grows and is one of the three
+ * copies a restore checks against rollback.
  */
 export interface SessionSyncState {
   readonly revision: number;
-  /** Session cookies in the last saved snapshot (0 = none saved). */
   readonly savedCount: number;
   readonly savedAt: string | null;
-  /** Why the last snapshot could not be sealed, if it couldn't. */
   readonly saveError: string | null;
   readonly restore: SessionRestoreSummary | null;
 }
 
-/**
- * Non-secret proxy settings and last test result. The credentials are sealed
- * separately (proxy.ts); only whether they exist is kept here.
- */
+/** Non-secret proxy settings and test result. Credentials are sealed in proxy.ts; only whether they exist is kept. */
 export interface ProxyState {
   readonly protocol: 'http' | 'https' | 'socks5';
   readonly host: string;
@@ -56,142 +65,297 @@ export interface ProxyState {
   readonly observedIp: string | null;
   readonly endpoint: 'primary' | 'backup' | null;
   readonly testedAt: string | null;
+  /** When this proxy configuration last passed Test Proxy (kept across restarts; cleared when it changes). */
+  readonly lastPassedAt: string | null;
   /** Sanitized error code of the last failed test. */
   readonly error: string | null;
 }
 
 export const EMPTY_SYNC: SessionSyncState = { revision: 0, savedCount: 0, savedAt: null, saveError: null, restore: null };
 
+/** One platform session: one isolated partition, one platform, one account. */
 export interface PocProfile {
   readonly id: string;
   readonly label: string;
-  /** The platform this profile's single account belongs to (see platforms.ts). */
   readonly platformId: string;
+  /** The Account Bundle it belongs to; null for the synthetic test profiles of earlier gates. */
+  readonly bundleId: string | null;
+  readonly optional: boolean;
   /** Collision-resistant Electron partition, independent of the label. */
   readonly partition: string;
   readonly status: SessionStatus;
   readonly statusReason: string | null;
   readonly lastImport: ImportSummary | null;
   readonly sessionSync: SessionSyncState;
-  /** The profile's dedicated proxy, or null (direct; allowed only in synthetic mode). */
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface AccountBundle {
+  readonly id: string;
+  readonly displayName: string;
+  readonly mode: ProductionMode;
   readonly proxy: ProxyState | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
 
-interface StoreFile {
-  readonly version: 1;
-  readonly profiles: PocProfile[];
-}
-
 export const PROFILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const PARTITION = /^persist:ps_[0-9a-f-]{36}$/;
 const PLATFORM_ID = /^[a-z][a-z0-9-]{1,31}$/;
 
-function newProfile(label: string, platformId: string, now: string): PocProfile {
+const MIGRATIONS: readonly string[] = [
+  `CREATE TABLE account_bundles (
+     id TEXT PRIMARY KEY,
+     display_name TEXT NOT NULL,
+     mode TEXT NOT NULL CHECK (mode IN ('affiliate_ugc', 'account_growth')),
+     proxy_json TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE TABLE platform_sessions (
+     id TEXT PRIMARY KEY,
+     bundle_id TEXT REFERENCES account_bundles(id),
+     platform_id TEXT NOT NULL,
+     label TEXT NOT NULL,
+     partition TEXT NOT NULL UNIQUE,
+     optional INTEGER NOT NULL DEFAULT 0,
+     state_json TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     UNIQUE (bundle_id, platform_id)
+   );`,
+];
+
+export class MetadataDb {
+  private constructor(readonly db: DatabaseSync | null) {}
+
+  /** Opens (and migrates) `ugc.db`. Read-only mode never creates or changes anything. */
+  static open(userData: string, options: { readOnly?: boolean } = {}): MetadataDb {
+    const path = join(userData, 'ugc.db');
+    if (options.readOnly) return new MetadataDb(existsSync(path) ? new DatabaseSync(path, { readOnly: true }) : null);
+    const db = new DatabaseSync(path);
+    db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;');
+    db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
+    const applied = new Set((db.prepare('SELECT version FROM schema_migrations').all() as Array<{ version: number }>).map((r) => r.version));
+    MIGRATIONS.forEach((sql, i) => {
+      const version = i + 1;
+      if (applied.has(version)) return;
+      db.exec('BEGIN');
+      try {
+        db.exec(sql);
+        db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(version, new Date().toISOString());
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
+    });
+    const store = new MetadataDb(db);
+    store.#importLegacyJson(join(userData, 'poc-profiles.json'));
+    return store;
+  }
+
+  /** One-time import of the Gate 1/2 JSON metadata as bundle-less sessions; the file is then renamed. */
+  #importLegacyJson(path: string): void {
+    if (!this.db || !existsSync(path)) return;
+    const count = (this.db.prepare('SELECT COUNT(*) AS n FROM platform_sessions').get() as { n: number }).n;
+    if (count > 0) return;
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { version?: number; profiles?: unknown[] };
+    if (parsed.version !== 1 || !Array.isArray(parsed.profiles)) throw new Error('legacy profile store has an unexpected shape');
+    const insert = this.db.prepare(
+      'INSERT INTO platform_sessions (id, bundle_id, platform_id, label, partition, optional, state_json, created_at, updated_at) VALUES (?, NULL, ?, ?, ?, 0, ?, ?, ?)',
+    );
+    this.db.exec('BEGIN');
+    try {
+      for (const raw of parsed.profiles) {
+        const p = raw as Record<string, unknown>;
+        if (typeof p['id'] !== 'string' || !PROFILE_ID.test(p['id']) || typeof p['partition'] !== 'string' || !PARTITION.test(p['partition'])) continue;
+        const platformId = typeof p['platformId'] === 'string' && PLATFORM_ID.test(p['platformId']) ? p['platformId'] : 'synthetic-poc';
+        const sync = (p['sessionSync'] ?? null) as SessionSyncState | null;
+        const state = {
+          status: isSessionStatus(p['status']) ? p['status'] : 'never_configured',
+          statusReason: typeof p['statusReason'] === 'string' ? p['statusReason'] : null,
+          lastImport: (p['lastImport'] ?? null) as ImportSummary | null,
+          sessionSync: sync ? { ...EMPTY_SYNC, ...sync } : EMPTY_SYNC,
+        };
+        const now = new Date().toISOString();
+        insert.run(p['id'], platformId, String(p['label'] ?? 'Profile'), p['partition'], JSON.stringify(state), String(p['createdAt'] ?? now), String(p['updatedAt'] ?? now));
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+    renameSync(path, `${path}.migrated`);
+  }
+
+  close(): void {
+    this.db?.close();
+  }
+}
+
+interface SessionRow {
+  id: string;
+  bundle_id: string | null;
+  platform_id: string;
+  label: string;
+  partition: string;
+  optional: number;
+  state_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function toProfile(row: SessionRow): PocProfile {
+  const state = JSON.parse(row.state_json) as Partial<Pick<PocProfile, 'status' | 'statusReason' | 'lastImport' | 'sessionSync'>>;
+  const sync = state.sessionSync;
   return {
-    id: randomUUID(),
-    label,
-    platformId,
-    partition: `persist:ps_${randomUUID()}`,
-    status: 'never_configured',
-    statusReason: null,
-    lastImport: null,
-    sessionSync: EMPTY_SYNC,
-    proxy: null,
-    createdAt: now,
-    updatedAt: now,
+    id: row.id,
+    label: row.label,
+    platformId: row.platform_id,
+    bundleId: row.bundle_id,
+    optional: row.optional === 1,
+    partition: row.partition,
+    status: isSessionStatus(state.status) ? state.status : 'never_configured',
+    statusReason: state.statusReason ?? null,
+    lastImport: state.lastImport ?? null,
+    sessionSync: sync ? { ...EMPTY_SYNC, ...sync, revision: Number.isSafeInteger(sync.revision) && sync.revision >= 0 ? sync.revision : 0 } : EMPTY_SYNC,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
-function isProfile(value: unknown): value is PocProfile {
-  const p = value as PocProfile;
-  return (
-    typeof p === 'object' &&
-    p !== null &&
-    typeof p.id === 'string' &&
-    PROFILE_ID.test(p.id) &&
-    typeof p.partition === 'string' &&
-    /^persist:ps_[0-9a-f-]{36}$/.test(p.partition) &&
-    isSessionStatus(p.status)
-  );
-}
+export type ProfilePatch = Partial<Pick<PocProfile, 'status' | 'statusReason' | 'lastImport' | 'sessionSync'>>;
 
-/** Fills fields added after a store was written (Gate 1 stores have no platform or sync state). */
-function upgrade(p: PocProfile & { sessionRestore?: unknown }): PocProfile {
-  const { sessionRestore: _old, ...rest } = p;
-  const sync = rest.sessionSync;
-  const revision = sync && Number.isSafeInteger(sync.revision) && sync.revision >= 0 ? sync.revision : 0;
-  return {
-    ...rest,
-    platformId: typeof rest.platformId === 'string' && PLATFORM_ID.test(rest.platformId) ? rest.platformId : 'synthetic-poc',
-    sessionSync: sync ? { ...EMPTY_SYNC, ...sync, revision } : EMPTY_SYNC,
-    proxy: rest.proxy ?? null,
-  };
-}
-
-export type ProfilePatch = Partial<Pick<PocProfile, 'status' | 'statusReason' | 'lastImport' | 'sessionSync' | 'proxy'>>;
-
-/**
- * Gate 1 stand-in for the SQLite metadata store: a small JSON file with
- * non-secret profile metadata. Replaced by SQLite migrations in Gate 3.
- */
+/** Platform sessions (the "profiles" of Gates 1–2), with or without a bundle. */
 export class ProfileStore {
-  readonly #path: string;
-  readonly #readOnly: boolean;
-  #profiles: PocProfile[];
+  readonly #db: DatabaseSync | null;
 
   /**
-   * Seeds two profiles for `platformId` if the store has none for it.
-   * `readOnly` never writes (used by the security check) and seeds nothing.
+   * `seedLegacyPlatformId`: seeds two bundle-less test profiles for that
+   * platform if none exist (synthetic test runs of the earlier gates).
    */
-  constructor(path: string, platformId: string | null, options: { readOnly?: boolean } = {}) {
-    this.#path = path;
-    this.#readOnly = options.readOnly ?? false;
-    this.#profiles = this.#load();
-    if (!this.#readOnly && platformId && !this.#profiles.some((p) => p.platformId === platformId)) {
-      const now = new Date().toISOString();
-      const prefix = platformId === 'synthetic-poc' ? 'Synthetic Profile' : 'Profile';
-      this.#profiles = [...this.#profiles, newProfile(`${prefix} A`, platformId, now), newProfile(`${prefix} B`, platformId, now)];
-      this.#write(this.#profiles);
+  constructor(meta: MetadataDb, seedLegacyPlatformId: string | null = null) {
+    this.#db = meta.db;
+    if (seedLegacyPlatformId && this.#db && !this.list().some((p) => p.bundleId === null && p.platformId === seedLegacyPlatformId)) {
+      const prefix = seedLegacyPlatformId === 'synthetic-poc' ? 'Synthetic Profile' : 'Profile';
+      this.create({ bundleId: null, platformId: seedLegacyPlatformId, label: `${prefix} A`, optional: false });
+      this.create({ bundleId: null, platformId: seedLegacyPlatformId, label: `${prefix} B`, optional: false });
     }
-  }
-
-  #load(): PocProfile[] {
-    try {
-      const parsed = JSON.parse(readFileSync(this.#path, 'utf8')) as StoreFile;
-      if (parsed.version === 1 && Array.isArray(parsed.profiles) && parsed.profiles.every(isProfile)) {
-        return parsed.profiles.map(upgrade);
-      }
-      throw new Error('profile store has an unexpected shape');
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    }
-    return [];
-  }
-
-  #write(profiles: PocProfile[]): void {
-    if (this.#readOnly) throw new Error('profile store is read-only');
-    mkdirSync(dirname(this.#path), { recursive: true });
-    const tmp = `${this.#path}.tmp`;
-    writeFileSync(tmp, JSON.stringify({ version: 1, profiles } satisfies StoreFile, null, 2), { mode: 0o600 });
-    renameSync(tmp, this.#path);
   }
 
   list(): readonly PocProfile[] {
-    return this.#profiles;
+    if (!this.#db) return [];
+    return (this.#db.prepare('SELECT * FROM platform_sessions ORDER BY created_at, rowid').all() as unknown as SessionRow[]).map(toProfile);
   }
 
   get(id: string): PocProfile | undefined {
-    return this.#profiles.find((p) => p.id === id);
+    if (!this.#db) return undefined;
+    const row = this.#db.prepare('SELECT * FROM platform_sessions WHERE id = ?').get(id) as unknown as SessionRow | undefined;
+    return row ? toProfile(row) : undefined;
+  }
+
+  forBundle(bundleId: string): readonly PocProfile[] {
+    return this.list().filter((p) => p.bundleId === bundleId);
+  }
+
+  create(input: { bundleId: string | null; platformId: string; label: string; optional: boolean }): PocProfile {
+    if (!this.#db) throw new Error('profile store is read-only');
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    const state = { status: 'never_configured', statusReason: null, lastImport: null, sessionSync: EMPTY_SYNC };
+    this.#db
+      .prepare(
+        'INSERT INTO platform_sessions (id, bundle_id, platform_id, label, partition, optional, state_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(id, input.bundleId, input.platformId, input.label, `persist:ps_${randomUUID()}`, input.optional ? 1 : 0, JSON.stringify(state), now, now);
+    return this.get(id)!;
   }
 
   update(id: string, patch: ProfilePatch): PocProfile {
+    if (!this.#db) throw new Error('profile store is read-only');
     const existing = this.get(id);
     if (!existing) throw new Error('unknown profile');
-    const updated: PocProfile = { ...existing, ...patch, updatedAt: new Date().toISOString() };
-    const next = this.#profiles.map((p) => (p.id === id ? updated : p));
-    this.#write(next);
-    this.#profiles = next;
-    return updated;
+    const merged = { ...existing, ...patch };
+    const state = { status: merged.status, statusReason: merged.statusReason, lastImport: merged.lastImport, sessionSync: merged.sessionSync };
+    this.#db.prepare('UPDATE platform_sessions SET state_json = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(state), new Date().toISOString(), id);
+    return this.get(id)!;
+  }
+}
+
+interface BundleRow {
+  id: string;
+  display_name: string;
+  mode: ProductionMode;
+  proxy_json: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function toBundle(row: BundleRow): AccountBundle {
+  const proxy = row.proxy_json ? (JSON.parse(row.proxy_json) as ProxyState) : null;
+  return {
+    id: row.id,
+    displayName: row.display_name,
+    mode: row.mode,
+    proxy: proxy ? { ...proxy, lastPassedAt: proxy.lastPassedAt ?? null } : null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export type BundlePatch = Partial<Pick<AccountBundle, 'displayName' | 'mode' | 'proxy'>>;
+
+export class BundleStore {
+  readonly #db: DatabaseSync | null;
+
+  constructor(meta: MetadataDb) {
+    this.#db = meta.db;
+  }
+
+  list(): readonly AccountBundle[] {
+    if (!this.#db) return [];
+    return (this.#db.prepare('SELECT * FROM account_bundles ORDER BY created_at, rowid').all() as unknown as BundleRow[]).map(toBundle);
+  }
+
+  get(id: string): AccountBundle | undefined {
+    if (!this.#db) return undefined;
+    const row = this.#db.prepare('SELECT * FROM account_bundles WHERE id = ?').get(id) as unknown as BundleRow | undefined;
+    return row ? toBundle(row) : undefined;
+  }
+
+  /** Creates a draft bundle (no proxy yet) and one isolated session per platform, in one transaction. */
+  create(
+    input: { displayName: string; mode: ProductionMode },
+    sessions: ReadonlyArray<{ platformId: string; label: string; optional: boolean }>,
+    profiles: ProfileStore,
+  ): AccountBundle {
+    if (!this.#db) throw new Error('bundle store is read-only');
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    this.#db.exec('BEGIN');
+    try {
+      this.#db
+        .prepare('INSERT INTO account_bundles (id, display_name, mode, proxy_json, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?)')
+        .run(id, input.displayName, input.mode, now, now);
+      for (const s of sessions) profiles.create({ bundleId: id, ...s });
+      this.#db.exec('COMMIT');
+    } catch (err) {
+      this.#db.exec('ROLLBACK');
+      throw err;
+    }
+    return this.get(id)!;
+  }
+
+  update(id: string, patch: BundlePatch): AccountBundle {
+    if (!this.#db) throw new Error('bundle store is read-only');
+    const existing = this.get(id);
+    if (!existing) throw new Error('unknown bundle');
+    const merged = { ...existing, ...patch };
+    this.#db
+      .prepare('UPDATE account_bundles SET display_name = ?, mode = ?, proxy_json = ?, updated_at = ? WHERE id = ?')
+      .run(merged.displayName, merged.mode, merged.proxy ? JSON.stringify(merged.proxy) : null, new Date().toISOString(), id);
+    return this.get(id)!;
   }
 }

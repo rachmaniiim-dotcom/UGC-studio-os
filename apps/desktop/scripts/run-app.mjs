@@ -1,15 +1,14 @@
 #!/usr/bin/env node
-// Gate 2 launcher: opens the app for the owner's manual Kalodata session test.
+// Launcher for the owner's own use of the Session Manager (Gate 3).
 // Refuses to start unless cookie encryption is on and the data folder is
 // private (outside the repo, outside OneDrive). Clears every synthetic/test
-// switch and discards the app's console output, so nothing from the real
-// session is printed. It never reads cookie files and never touches Kalodata:
-// the owner imports, browses and confirms by hand.
-// Usage: node scripts/run-gate2.mjs [--user-data <dir>]   (default C:\ugc-private\gate2-userData)
+// switch and discards the app's console output, so nothing from real sessions
+// is printed. Real credentials are entered only in the app's own window.
+// Usage: node scripts/run-app.mjs [--user-data <dir>]   (default C:\ugc-private\ugc-userData)
 import { FuseState, FuseV1Options, getCurrentFuseWire } from '@electron/fuses';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { dirname, join, relative, resolve, isAbsolute } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const desktopDir = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -17,7 +16,7 @@ const repoRoot = resolve(desktopDir, '..', '..');
 const electronPath = createRequire(import.meta.url)('electron');
 const args = process.argv.slice(2);
 const at = args.indexOf('--user-data');
-const userData = resolve(at >= 0 && args[at + 1] ? args[at + 1] : 'C:\\ugc-private\\gate2-userData');
+const userData = resolve(at >= 0 && args[at + 1] ? args[at + 1] : 'C:\\ugc-private\\ugc-userData');
 
 const inside = (child, parent) => {
   const rel = relative(parent, child);
@@ -36,10 +35,10 @@ for (const synced of [process.env.OneDrive, process.env.OneDriveConsumer, proces
   if (synced && inside(userData, resolve(synced))) fail('the data folder is inside OneDrive.');
 }
 
-const env = { ...process.env, UGC_PLATFORM: 'kalodata', UGC_POC_USER_DATA: userData };
-for (const key of Object.keys(env)) if (key === 'NODE_OPTIONS' || (key.startsWith('UGC_POC_') && key !== 'UGC_POC_USER_DATA')) delete env[key];
+const env = { ...process.env, UGC_POC_USER_DATA: userData };
+for (const key of Object.keys(env)) if (key === 'NODE_OPTIONS' || key === 'UGC_PLATFORM' || (key.startsWith('UGC_POC_') && key !== 'UGC_POC_USER_DATA')) delete env[key];
 
-console.log(`Starting the app for Kalodata (manual) with data folder ${userData}. Close the app window to finish.`);
+console.log(`Starting UGC Production OS with data folder ${userData}. Close the window to finish.`);
 const child = spawn(electronPath, [join(desktopDir, 'dist', 'main', 'main.js')], { env, stdio: 'ignore' });
 child.on('exit', (code) => {
   console.log(`App closed (exit ${code ?? 0}).`);

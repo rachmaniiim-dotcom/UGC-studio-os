@@ -6,6 +6,7 @@ import {
   filesContaining,
   fusedElectron,
   importFile,
+  createAccount,
   launch,
   ok,
   openSite,
@@ -116,21 +117,21 @@ test('finds a leaked proxy password and reports it by kind only', async () => {
   const dir = await workDir('check-proxy');
   const userData = join(dir, 'userData');
   const password = syntheticToken('proxy_secret');
-  const run = await launch({ userData, site, executablePath, allowUnencryptedSynthetic: false });
-  const [a] = await profiles(run);
+  const run = await launch({ userData, site, executablePath, allowUnencryptedSynthetic: false, seedProfiles: false });
   try {
-    await ok(run, 'setProxy', a!.id, { protocol: 'http', host: '127.0.0.1', port: 9, username: 'leak-test-user', password });
+    const account = await createAccount(run, 'Leak test');
+    await ok(run, 'setAccountProxy', account.id, { protocol: 'http', host: '127.0.0.1', port: 9, username: 'leak-test-user', password }, false);
   } finally {
     await quit(run);
   }
   const clean = await securityCheck({ userData, executablePath });
   expect(clean.report.findings).toEqual([]);
-  expect(clean.report.profiles[0]!.needles).toBe(2); // proxy username and password
+  expect(clean.report.accounts).toEqual([{ label: 'Leak test', proxyCredentials: 2 }]); // username and password searched
 
   writeFileSync(join(userData, 'notes.txt'), `proxy password was ${password}`);
   const check = await securityCheck({ userData, executablePath });
   expect(check.report.findings).toEqual([
-    { check: 'plaintext_secret_in_file', severity: 'high', count: 1, where: 'userData/notes.txt', matched: ['Synthetic Profile A proxy-password x1'] },
+    { check: 'plaintext_secret_in_file', severity: 'high', count: 1, where: 'userData/notes.txt', matched: ['Leak test proxy-password x1'] },
   ]);
   expect(check.output).not.toContain(password);
   expect(check.output).not.toContain(CANARY_MARKER);

@@ -27,7 +27,8 @@ export const PATH_RULES = [
   { id: 'session-restore-dir', pattern: /(^|\/)session-restore\// },
   { id: 'browser-profile', pattern: /(^|\/)(userData|Partitions|vault|ugc-private)\// },
   { id: 'chromium-state', pattern: /(^|\/)(Cookies|Cookies-journal|Local State|Login Data|Web Data|Preferences)$/ },
-  { id: 'profile-metadata', pattern: /(^|\/)poc-profiles\.json$/ },
+  { id: 'profile-metadata', pattern: /(^|\/)(poc-profiles\.json(\.migrated)?|ugc\.db(-journal|-wal)?)$/ },
+  { id: 'proxy-credentials', pattern: /(^|\/)proxy-secrets\/|\.proxy$/ },
   { id: 'app-log', pattern: /(^|\/)logs\/[^/]*\.log$/ },
 ];
 

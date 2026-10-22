@@ -52,7 +52,21 @@ test('the app UI gets only a frozen, narrow bridge and its CSP blocks injected s
       process: 'undefined',
       ipcRenderer: 'undefined',
       frozen: true,
-      methods: ['checkStatus', 'clearProfile', 'confirmStatus', 'getPlatform', 'importCookies', 'listProfiles', 'openSite', 'setProxy', 'testProxy'],
+      methods: [
+        'checkStatus',
+        'clearProfile',
+        'confirmStatus',
+        'createAccount',
+        'getPlatform',
+        'importCookies',
+        'importSessionText',
+        'listAccounts',
+        'listProfiles',
+        'openSite',
+        'setAccountProxy',
+        'testAccountProxy',
+        'updateAccount',
+      ],
       injected: null,
     });
   } finally {
@@ -156,7 +170,7 @@ test('no synthetic secret reaches logs, profile metadata or bridge responses', a
   expect(log).toContain('cookie_import_failed');
   expect(JSON.stringify(run.responses)).not.toContain(CANARY_MARKER);
   expect(log).not.toContain(CANARY_MARKER);
-  expect(readFileSync(join(userData, 'poc-profiles.json'), 'utf8')).not.toContain(CANARY_MARKER);
+  expect(readFileSync(join(userData, 'ugc.db')).toString('latin1')).not.toContain(CANARY_MARKER);
 });
 
 test('an Electron binary without the cookie-encryption fuse refuses imports by default', async () => {

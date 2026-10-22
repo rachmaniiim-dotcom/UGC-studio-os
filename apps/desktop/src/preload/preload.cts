@@ -3,10 +3,20 @@ import electron = require('electron');
 const { contextBridge, ipcRenderer } = electron;
 
 // The only bridge into privileged code: fixed channels, fixed argument shapes.
-// No generic invoke(), no ipcRenderer, no Node APIs.
+// No generic invoke(), no ipcRenderer, no Node APIs. Secrets only flow in
+// (pasted JSON, proxy password); nothing secret is ever returned.
 contextBridge.exposeInMainWorld(
   'ugc',
   Object.freeze({
+    // Account Bundles (Gate 3)
+    listAccounts: () => ipcRenderer.invoke('accounts:list'),
+    createAccount: (displayName: string, mode: string) => ipcRenderer.invoke('accounts:create', { displayName, mode }),
+    updateAccount: (bundleId: string, displayName: string, mode: string) => ipcRenderer.invoke('accounts:update', { bundleId, displayName, mode }),
+    setAccountProxy: (bundleId: string, proxy: unknown, keepCredentials: boolean) =>
+      ipcRenderer.invoke('accounts:set-proxy', { bundleId, proxy, keepCredentials }),
+    testAccountProxy: (bundleId: string) => ipcRenderer.invoke('accounts:test-proxy', { bundleId }),
+    importSessionText: (profileId: string, text: string) => ipcRenderer.invoke('accounts:import-text', { profileId, text }),
+    // Platform sessions
     getPlatform: () => ipcRenderer.invoke('poc:get-platform'),
     listProfiles: () => ipcRenderer.invoke('poc:list-profiles'),
     importCookies: (profileId: string) => ipcRenderer.invoke('poc:import-cookies', { profileId }),
@@ -14,7 +24,5 @@ contextBridge.exposeInMainWorld(
     confirmStatus: (profileId: string, observation: string) => ipcRenderer.invoke('poc:confirm-status', { profileId, observation }),
     openSite: (profileId: string, page: string) => ipcRenderer.invoke('poc:open-site', { profileId, page }),
     clearProfile: (profileId: string) => ipcRenderer.invoke('poc:clear-profile', { profileId }),
-    setProxy: (profileId: string, proxy: unknown) => ipcRenderer.invoke('poc:set-proxy', { profileId, proxy }),
-    testProxy: (profileId: string) => ipcRenderer.invoke('poc:test-proxy', { profileId }),
   }),
 );
