@@ -76,7 +76,8 @@ export function snapshotPaths(dir: string, profileId: string): { record: string;
   return { record: join(dir, `${profileId}.sealed`), revision: join(dir, `${profileId}.rev`) };
 }
 
-function writeAtomic(file: string, data: Buffer): void {
+/** Writes `data` to a temp file, fsyncs it, then renames it over `file`. */
+export function writeAtomic(file: string, data: Buffer): void {
   const tmp = `${file}.tmp`;
   const fd = openSync(tmp, 'w', 0o600);
   try {
@@ -168,14 +169,14 @@ function readSnapshot(
 
 /**
  * For the security check: whether the profile's snapshot would restore, and
- * its values (to search files for). Never sets cookies or changes files.
+ * its cookies (to search files for their values). Never sets cookies or changes files.
  */
-export function inspectSnapshot(dir: string, profile: PocProfile, cookieDomains: readonly string[]): { state: string; values: string[] } {
+export function inspectSnapshot(dir: string, profile: PocProfile, cookieDomains: readonly string[]): { state: string; cookies: readonly NormalizedCookie[] } {
   try {
     const snapshot = readSnapshot(dir, profile, cookieDomains);
-    return snapshot ? { state: 'ok', values: snapshot.cookies.map((c) => c.value.reveal()) } : { state: 'none', values: [] };
+    return snapshot ? { state: 'ok', cookies: snapshot.cookies } : { state: 'none', cookies: [] };
   } catch (err) {
-    return { state: err instanceof RestoreFailure ? err.code : 'internal_error', values: [] };
+    return { state: err instanceof RestoreFailure ? err.code : 'internal_error', cookies: [] };
   }
 }
 

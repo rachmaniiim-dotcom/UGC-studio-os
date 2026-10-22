@@ -21,7 +21,7 @@ export function createMainWindow(preloadPath: string, devTools: boolean, log: Lo
   const win = new BrowserWindow({
     width: 1100,
     height: 760,
-    title: 'UGC Production OS — Gate 1 PoC',
+    title: 'UGC Production OS — Session Manager',
     webPreferences: {
       preload: preloadPath,
       sandbox: true,
@@ -64,6 +64,8 @@ export function openSiteWindow(
     },
   });
   guardNavigation(win.webContents, (target) => urlInDomains(target, navigationDomains), log);
+  // WebRTC must not open UDP paths around the profile's proxy (they would expose the real IP).
+  win.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
   void win.loadURL(url);
   return win;
 }

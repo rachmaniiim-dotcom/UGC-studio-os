@@ -40,6 +40,17 @@ export interface Profile {
     saveError: string | null;
     restore: null | { at: string; state: string; count: number; error: string | null };
   };
+  proxy: null | {
+    protocol: string;
+    host: string;
+    port: number;
+    hasCredentials: boolean;
+    status: string;
+    observedIp: string | null;
+    endpoint: string | null;
+    testedAt: string | null;
+    error: string | null;
+  };
 }
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: { code: string } };
@@ -127,8 +138,26 @@ export async function importFile(run: Running, profileId: string, file: string):
 }
 
 /** Opens a site page in the profile's isolated window and returns the text the page shows. */
+/**
+ * Resolves with the next site window. Skips the hidden Test Proxy windows,
+ * which Open Site creates first when a proxy still needs validating.
+ */
+export function nextSiteWindow(run: Running): Promise<Page> {
+  return run.app.waitForEvent('window', {
+    predicate: async (page) => {
+      await page.waitForLoadState('domcontentloaded').catch(() => undefined);
+      if (page.isClosed()) return false;
+      try {
+        return !/^\/ip(-backup)?$/.test(new URL(page.url()).pathname);
+      } catch {
+        return false;
+      }
+    },
+  });
+}
+
 export async function openSite(run: Running, profileId: string, page = 'home'): Promise<{ window: Page; status: string; state: string }> {
-  const opened = run.app.waitForEvent('window');
+  const opened = nextSiteWindow(run);
   await ok(run, 'openSite', profileId, page);
   const window = await opened;
   const status = window.locator('#status:not([data-state="loading"])');

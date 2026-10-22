@@ -35,3 +35,13 @@ export {
   type ResearchQuery,
   type ResearchUse,
 } from './research/provider.js';
+export {
+  validateProxyInput,
+  chromiumProxyRules,
+  challengeMatches,
+  type ProxyProtocol,
+  type ProxyEndpoint,
+  type ProxyCredentials,
+  type ProxySettings,
+  type ProxyIssue,
+} from './proxy/config.js';

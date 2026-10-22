@@ -37,6 +37,16 @@ interface Profile {
   lastImport: ImportSummary | null;
   platformId: string;
   sessionSync: SessionSync;
+  proxy: null | {
+    protocol: string;
+    host: string;
+    port: number;
+    hasCredentials: boolean;
+    status: string;
+    observedIp: string | null;
+    endpoint: string | null;
+    error: string | null;
+  };
 }
 
 type Result<T> = { ok: true; data: T } | { ok: false; error: { code: string } };
@@ -49,6 +59,7 @@ interface UgcBridge {
   confirmStatus(profileId: string, observation: 'logged_in' | 'logged_out'): Promise<Result<Profile>>;
   openSite(profileId: string, page: string): Promise<Result<{ opened: boolean }>>;
   clearProfile(profileId: string): Promise<Result<Profile>>;
+  testProxy(profileId: string): Promise<Result<Profile>>;
 }
 
 const bridge = (window as unknown as { ugc: UgcBridge }).ugc;
@@ -113,6 +124,15 @@ function render(platform: PlatformInfo, profiles: Profile[]): void {
       sync.dataset['savedCount'] = String(profile.sessionSync.savedCount);
       sync.dataset['restoreState'] = profile.sessionSync.restore?.state ?? 'none';
       card.append(sync);
+      const proxy = profile.proxy;
+      const proxyText = proxy
+        ? `Proxy: ${proxy.protocol}://${proxy.host}:${proxy.port}${proxy.hasCredentials ? ' (credentials set)' : ''} · ${proxy.status}` +
+          (proxy.observedIp ? ` · public IP ${proxy.observedIp} (${proxy.endpoint})` : '') +
+          (proxy.error ? ` · ${proxy.error}` : '')
+        : 'Proxy: none';
+      const proxyLine = el('p', proxyText, 'meta proxy');
+      proxyLine.dataset['proxyStatus'] = proxy?.status ?? 'none';
+      card.append(proxyLine);
 
       const actions = el('div', undefined, 'actions');
       const button = (label: string, action: () => Promise<Result<unknown>>): void => {
@@ -123,12 +143,13 @@ function render(platform: PlatformInfo, profiles: Profile[]): void {
         actions.append(b);
       };
       button('Import Cookie-Editor JSON…', () => bridge.importCookies(profile.id));
+      if (profile.proxy) button('Test proxy', () => bridge.testProxy(profile.id));
       // Automated checks only where the platform permits them; otherwise the owner says what they see.
       if (platform.statusCheck === 'probe') button('Check status', () => bridge.checkStatus(profile.id));
       button('I see I am logged in', () => bridge.confirmStatus(profile.id, 'logged_in'));
       button('I see I am logged out', () => bridge.confirmStatus(profile.id, 'logged_out'));
       for (const page of platform.pages) {
-        if (page === 'rotate' || page === 'logout') continue; // synthetic test endpoints, driven by tests only
+        if (page === 'rotate' || page === 'logout' || page === 'basic-auth') continue; // synthetic test endpoints, driven by tests only
         button(PAGE_LABELS[page] ?? `Open ${page}`, () => bridge.openSite(profile.id, page));
       }
       button('Clear', () => bridge.clearProfile(profile.id));

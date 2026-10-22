@@ -50,7 +50,10 @@ child.on('exit', (code) => {
     }
     const s = report.scan;
     console.log(`  scanned ${s.files} files (${(s.bytes / 1048576).toFixed(1)} MB) in ${s.roots} root(s); ${s.unreadable} unreadable, ${s.skippedLarge} too large`);
-    for (const f of report.findings) console.log(`  FINDING [${f.severity}] ${f.check} x${f.count}${f.where ? ` at ${f.where}` : ''}`);
+    for (const f of report.findings) {
+      console.log(`  FINDING [${f.severity}] ${f.check} x${f.count}${f.where ? ` at ${f.where}` : ''}`);
+      for (const m of f.matched ?? []) console.log(`      matched: ${m}`);
+    }
   }
   process.exit(code ?? 2);
 });

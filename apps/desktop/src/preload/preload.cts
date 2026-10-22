@@ -14,5 +14,7 @@ contextBridge.exposeInMainWorld(
     confirmStatus: (profileId: string, observation: string) => ipcRenderer.invoke('poc:confirm-status', { profileId, observation }),
     openSite: (profileId: string, page: string) => ipcRenderer.invoke('poc:open-site', { profileId, page }),
     clearProfile: (profileId: string) => ipcRenderer.invoke('poc:clear-profile', { profileId }),
+    setProxy: (profileId: string, proxy: unknown) => ipcRenderer.invoke('poc:set-proxy', { profileId, proxy }),
+    testProxy: (profileId: string) => ipcRenderer.invoke('poc:test-proxy', { profileId }),
   }),
 );

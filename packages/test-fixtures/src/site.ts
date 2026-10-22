@@ -1,7 +1,7 @@
 import { createHash, X509Certificate } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:https';
-import type { AddressInfo } from 'node:net';
+import { connect, createServer as createTcpServer, type AddressInfo, type Socket } from 'node:net';
 import { generate } from 'selfsigned';
 import { SESSION_COOKIE, SYNTHETIC_DOMAIN, SYNTHETIC_HOST, syntheticToken } from './fixtures.js';
 
@@ -10,6 +10,14 @@ export interface RecordedRequest {
   readonly cookieNames: readonly string[];
   /** SHA-256 of the session token, so tests can compare without seeing it. */
   readonly sessionTokenHash: string | null;
+  /**
+   * The client address the site saw: a synthetic proxy's exit IP (sent with
+   * the PROXY protocol header, as real load balancers do), or 'direct' for a
+   * connection that did not come through a synthetic proxy.
+   */
+  readonly clientIp: string;
+  /** Whether the request carried an Authorization header (never its content). */
+  readonly authorizationSent: boolean;
 }
 
 export interface SyntheticSite {
@@ -21,6 +29,8 @@ export interface SyntheticSite {
   /** Registers a session token the site will accept for `user`. */
   addUser(user: string, token?: string): string;
   revokeToken(token: string): void;
+  /** Makes the primary IP-diagnostic endpoint (/ip) fail, to exercise the backup (/ip-backup). */
+  failPrimaryIp(fail: boolean): void;
   close(): Promise<void>;
 }
 
@@ -105,6 +115,9 @@ export async function startSyntheticSite(): Promise<SyntheticSite> {
   const users = new Map<string, string>();
   const deviceTokens = new Map<string, string>();
   let rotations = 0;
+  let primaryIpFails = false;
+  /** Client address per TCP connection, keyed by the connection's remote port. */
+  const clientIps = new Map<number, string>();
   const requests: RecordedRequest[] = [];
 
   const json = (res: ServerResponse, status: number, body: unknown): void => {
@@ -120,10 +133,13 @@ export async function startSyntheticSite(): Promise<SyntheticSite> {
     const url = new URL(req.url ?? '/', `https://${SYNTHETIC_HOST}`);
     const cookies = parseCookies(req.headers.cookie);
     const token = cookies.get(SESSION_COOKIE) ?? null;
+    const clientIp = clientIps.get(req.socket.remotePort ?? -1) ?? 'direct';
     requests.push({
       path: url.pathname,
       cookieNames: [...cookies.keys()].sort(),
       sessionTokenHash: token ? hashToken(token) : null,
+      clientIp,
+      authorizationSent: req.headers.authorization !== undefined,
     });
     const user = token ? users.get(token) : undefined;
 
@@ -156,6 +172,17 @@ export async function startSyntheticSite(): Promise<SyntheticSite> {
           ],
         });
       }
+      // IP-diagnostic endpoints (synthetic stand-ins for the reviewed public ones).
+      case '/ip':
+        if (primaryIpFails) return json(res, 503, { error: 'unavailable' });
+        return json(res, 200, { ip: clientIp });
+      case '/ip-backup':
+        res.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
+        return void res.end(`${clientIp}\n`);
+      // A site asking for HTTP Basic auth: proxy credentials must never be offered here.
+      case '/basic-auth':
+        res.writeHead(401, { 'www-authenticate': 'Basic realm="synthetic-site"', 'content-type': 'text/plain' });
+        return void res.end('site authentication required');
       case '/logout':
         if (token) users.delete(token);
         return html(res, PAGE(MARK_SCRIPT('logged-out', 'Logged out')), {
@@ -187,7 +214,49 @@ export async function startSyntheticSite(): Promise<SyntheticSite> {
 
   const server = createServer({ key: pems.private, cert: pems.cert }, handler);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address() as AddressInfo;
+  const innerPort = (server.address() as AddressInfo).port;
+
+  // A TCP relay in front of the HTTPS server. It reads the PROXY protocol v1
+  // header the synthetic proxies send (absent on direct connections), records
+  // the client IP under the relay connection's port, and forwards the rest.
+  const sockets = new Set<Socket>();
+  const track = (s: Socket): void => {
+    sockets.add(s);
+    s.on('close', () => sockets.delete(s));
+  };
+  const front = createTcpServer((socket) => {
+    track(socket);
+    socket.once('data', (chunk: Buffer) => {
+      socket.pause();
+      let rest = chunk;
+      let ip = 'direct';
+      const text = chunk.subarray(0, 108).toString('latin1');
+      if (text.startsWith('PROXY ')) {
+        const end = text.indexOf('\r\n');
+        ip = text.slice(0, end).split(' ')[2] ?? 'unknown';
+        rest = chunk.subarray(end + 2);
+      }
+      const inner = connect({ host: '127.0.0.1', port: innerPort }, () => {
+        const relayPort = inner.localPort ?? -1;
+        clientIps.set(relayPort, ip);
+        inner.on('close', () => clientIps.delete(relayPort));
+        if (rest.length > 0) inner.write(rest);
+        socket.pipe(inner);
+        inner.pipe(socket);
+      });
+      track(inner);
+      const closeBoth = (): void => {
+        inner.destroy();
+        socket.destroy();
+      };
+      inner.on('error', closeBoth);
+      socket.on('error', closeBoth);
+      inner.on('close', () => socket.destroy());
+      socket.on('close', () => inner.destroy());
+    });
+  });
+  await new Promise<void>((resolve) => front.listen(0, '127.0.0.1', resolve));
+  const { port } = front.address() as AddressInfo;
 
   return {
     port,
@@ -201,10 +270,15 @@ export async function startSyntheticSite(): Promise<SyntheticSite> {
     revokeToken(token) {
       users.delete(token);
     },
+    failPrimaryIp(fail) {
+      primaryIpFails = fail;
+    },
     close: () =>
       new Promise<void>((resolve, reject) => {
+        for (const s of sockets) s.destroy();
         server.closeAllConnections();
-        server.close((err) => (err ? reject(err) : resolve()));
+        server.close();
+        front.close((err) => (err ? reject(err) : resolve()));
       }),
   };
 }

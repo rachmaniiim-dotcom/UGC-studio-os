@@ -43,6 +43,23 @@ export interface SessionSyncState {
   readonly restore: SessionRestoreSummary | null;
 }
 
+/**
+ * Non-secret proxy settings and last test result. The credentials are sealed
+ * separately (proxy.ts); only whether they exist is kept here.
+ */
+export interface ProxyState {
+  readonly protocol: 'http' | 'https' | 'socks5';
+  readonly host: string;
+  readonly port: number;
+  readonly hasCredentials: boolean;
+  readonly status: 'untested' | 'ok' | 'failed';
+  readonly observedIp: string | null;
+  readonly endpoint: 'primary' | 'backup' | null;
+  readonly testedAt: string | null;
+  /** Sanitized error code of the last failed test. */
+  readonly error: string | null;
+}
+
 export const EMPTY_SYNC: SessionSyncState = { revision: 0, savedCount: 0, savedAt: null, saveError: null, restore: null };
 
 export interface PocProfile {
@@ -56,6 +73,8 @@ export interface PocProfile {
   readonly statusReason: string | null;
   readonly lastImport: ImportSummary | null;
   readonly sessionSync: SessionSyncState;
+  /** The profile's dedicated proxy, or null (direct; allowed only in synthetic mode). */
+  readonly proxy: ProxyState | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -78,6 +97,7 @@ function newProfile(label: string, platformId: string, now: string): PocProfile 
     statusReason: null,
     lastImport: null,
     sessionSync: EMPTY_SYNC,
+    proxy: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -105,10 +125,11 @@ function upgrade(p: PocProfile & { sessionRestore?: unknown }): PocProfile {
     ...rest,
     platformId: typeof rest.platformId === 'string' && PLATFORM_ID.test(rest.platformId) ? rest.platformId : 'synthetic-poc',
     sessionSync: sync ? { ...EMPTY_SYNC, ...sync, revision } : EMPTY_SYNC,
+    proxy: rest.proxy ?? null,
   };
 }
 
-export type ProfilePatch = Partial<Pick<PocProfile, 'status' | 'statusReason' | 'lastImport' | 'sessionSync'>>;
+export type ProfilePatch = Partial<Pick<PocProfile, 'status' | 'statusReason' | 'lastImport' | 'sessionSync' | 'proxy'>>;
 
 /**
  * Gate 1 stand-in for the SQLite metadata store: a small JSON file with

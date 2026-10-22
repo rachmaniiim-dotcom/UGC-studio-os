@@ -6,6 +6,7 @@ import { createLogger, type PlatformDefinition } from '@ugc/core';
 import { registerAppScheme, serveAppProtocol } from './app-protocol.js';
 import { readRuntimeConfig } from './config.js';
 import { registerIpc } from './ipc.js';
+import { ProxyService, PUBLIC_DIAGNOSTIC_ENDPOINTS, syntheticDiagnosticEndpoints } from './proxy.js';
 import { resolvePlatform } from './platforms.js';
 import { ProfileStore } from './profiles.js';
 import { runSecurityCheck } from './security-check.js';
@@ -40,6 +41,7 @@ let mainWindow: BrowserWindow | null = null;
 let store: ProfileStore | undefined;
 let platform: PlatformDefinition | null = null;
 let sync: SessionSync | null = null;
+let proxies: ProxyService | null = null;
 
 app.on('web-contents-created', (_event, contents) => {
   contents.on('render-process-gone', (_e, details) => log.warn('renderer_gone', { reason: details.reason }));
@@ -66,12 +68,25 @@ if (securityCheck) {
     hardenSession(session.defaultSession, { ...config, synthetic: false }, null, log);
     if (platform) {
       const active = platform;
-      sync = new SessionSync({ dir: restoreDir, store, platform: active, log, sessionOf: (p) => profileSession(p.partition, config, active, log) });
+      const sessionOf = (p: { partition: string }) => profileSession(p.partition, config, active, log);
+      // Proxies first: every partition gets its proxy before anything can make a request from it.
+      proxies = new ProxyService({
+        dir: join(app.getPath('userData'), 'proxy-secrets'),
+        store,
+        config,
+        platform: active,
+        log,
+        sessionOf,
+        hardenTestSession: (ses) => void hardenSession(ses, config, active, log),
+        endpoints: config.synthetic && config.siteOrigin ? syntheticDiagnosticEndpoints(config.siteOrigin) : PUBLIC_DIAGNOSTIC_ENDPOINTS,
+      });
+      await proxies.start();
+      sync = new SessionSync({ dir: restoreDir, store, platform: active, log, sessionOf });
       // Restore sealed session cookies before any window or IPC handler exists.
       await sync.start();
     }
     serveAppProtocol(join(here, '..', 'renderer'));
-    registerIpc({ config, store, log, mainWindow: () => mainWindow, platform, sync, userData: app.getPath('userData') });
+    registerIpc({ config, store, log, mainWindow: () => mainWindow, platform, sync, proxies, userData: app.getPath('userData') });
     mainWindow = createMainWindow(join(here, '..', 'preload', 'preload.cjs'), config.synthetic, log);
     mainWindow.on('closed', () => (mainWindow = null));
     log.info('app_ready', { synthetic: config.synthetic, platform: platform?.id ?? null, profiles: store.list().length });

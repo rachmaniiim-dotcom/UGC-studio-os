@@ -1,7 +1,7 @@
 import { REDACTED, SecretValue } from './secret.js';
 
 const SENSITIVE_KEY =
-  /^(value|cookies?|set-cookie|authorization|proxy-authorization|token|access_?token|refresh_?token|id_?token|session_?(id|token)?|sid|password|passwd|secret|api_?key|auth|credentials?|storage_?state|payload)$/i;
+  /^(value|cookies?|set-cookie|authorization|proxy-authorization|proxy_?(user(name)?|pass(word)?|credentials?)|username|token|access_?token|refresh_?token|id_?token|session_?(id|token)?|sid|password|passwd|secret|api_?key|auth|credentials?|storage_?state|payload)$/i;
 
 const TEXT_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   // HTTP header lines carrying credentials.
@@ -9,6 +9,8 @@ const TEXT_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, `Bearer ${REDACTED}`],
   // JWT-shaped tokens.
   [/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g, REDACTED],
+  // Credentials inside URLs (e.g. a proxy URL user:password@host).
+  [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@"'<>]+@/gi, `$1${REDACTED}@`],
   // Query strings can carry tokens; keep scheme/host/path only.
   [/(\bhttps?:\/\/[^\s?#"'<>]+)\?[^\s#"'<>]*/gi, `$1?${REDACTED}`],
   // "value": "..." pairs from serialized cookie JSON.

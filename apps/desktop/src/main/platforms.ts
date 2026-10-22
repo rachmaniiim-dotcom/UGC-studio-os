@@ -49,6 +49,7 @@ function syntheticPlatform(origin: string, manualStatus: boolean): PlatformDefin
       'interactive-login': `${origin}/interactive-login`,
       rotate: `${origin}/rotate`,
       logout: `${origin}/logout`,
+      'basic-auth': `${origin}/basic-auth`,
     },
     statusCheck: manualStatus ? { kind: 'manual' } : { kind: 'probe', path: '/whoami' },
     authorization: manualStatus

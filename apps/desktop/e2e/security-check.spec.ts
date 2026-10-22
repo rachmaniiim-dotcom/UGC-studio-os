@@ -1,12 +1,13 @@
 import { expect, test } from '@playwright/test';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CANARY_MARKER, cookieEditorEntry, sessionCookieEntry, startSyntheticSite, type SyntheticSite } from '@ugc/test-fixtures';
+import { CANARY_MARKER, cookieEditorEntry, sessionCookieEntry, startSyntheticSite, syntheticToken, type SyntheticSite } from '@ugc/test-fixtures';
 import {
   filesContaining,
   fusedElectron,
   importFile,
   launch,
+  ok,
   openSite,
   profiles,
   quit,
@@ -109,3 +110,28 @@ test('refuses to run while the app is using the same profile data', async () => 
   }
 });
 
+
+test('finds a leaked proxy password and reports it by kind only', async () => {
+  const executablePath = await fusedElectron();
+  const dir = await workDir('check-proxy');
+  const userData = join(dir, 'userData');
+  const password = syntheticToken('proxy_secret');
+  const run = await launch({ userData, site, executablePath, allowUnencryptedSynthetic: false });
+  const [a] = await profiles(run);
+  try {
+    await ok(run, 'setProxy', a!.id, { protocol: 'http', host: '127.0.0.1', port: 9, username: 'leak-test-user', password });
+  } finally {
+    await quit(run);
+  }
+  const clean = await securityCheck({ userData, executablePath });
+  expect(clean.report.findings).toEqual([]);
+  expect(clean.report.profiles[0]!.needles).toBe(2); // proxy username and password
+
+  writeFileSync(join(userData, 'notes.txt'), `proxy password was ${password}`);
+  const check = await securityCheck({ userData, executablePath });
+  expect(check.report.findings).toEqual([
+    { check: 'plaintext_secret_in_file', severity: 'high', count: 1, where: 'userData/notes.txt', matched: ['Synthetic Profile A proxy-password x1'] },
+  ]);
+  expect(check.output).not.toContain(password);
+  expect(check.output).not.toContain(CANARY_MARKER);
+});

@@ -5,6 +5,7 @@ import type { Logger } from '@ugc/core';
 import { cookieEncryptionFuseEnabled } from './fuses.js';
 import { cookieDomainsFor } from './platforms.js';
 import { ProfileStore, type PocProfile } from './profiles.js';
+import { readProxyCredentials } from './proxy.js';
 import { inspectSnapshot, protectedStorageAvailable } from './session-sync.js';
 
 /**
@@ -31,11 +32,25 @@ export interface Finding {
   readonly count: number;
   /** A file path (root label + relative path) or a profile label. Never secret content. */
   readonly where?: string;
+  /**
+   * For leaked values: which kinds of cookie matched, by non-secret attributes
+   * only ("<profile> <domain> <httpOnly|script-readable> <session|persistent>"),
+   * with a count. Never names or values.
+   */
+  readonly matched?: readonly string[];
 }
 
 interface Needle {
   readonly bytes: Buffer[];
   readonly profiles: Set<string>;
+  /** Non-secret descriptions of the cookies that hold this value. */
+  readonly kinds: Set<string>;
+}
+
+/** Attributes a finding may show about a cookie: never its name or value. */
+function describeCookie(profile: string, c: Electron.Cookie): string {
+  const domain = (c.domain ?? '').replace(/^\./, '');
+  return `${profile} ${domain} ${c.httpOnly ? 'httpOnly' : 'script-readable'} ${c.session ? 'session' : 'persistent'}`;
 }
 
 export interface SecurityCheckOptions {
@@ -78,15 +93,16 @@ async function inspectCookieDb(file: string): Promise<{ rows: number; plaintextR
   }
 }
 
-function addNeedle(needles: Map<string, Needle>, value: string, profile: string): boolean {
+function addNeedle(needles: Map<string, Needle>, value: string, profile: string, kind: string): boolean {
   if (Buffer.byteLength(value, 'utf8') < MIN_NEEDLE_BYTES) return false;
   const existing = needles.get(value);
   if (existing) {
     existing.profiles.add(profile);
+    existing.kinds.add(kind);
     return true;
   }
   const forms = new Set([value, encodeURIComponent(value)]);
-  needles.set(value, { bytes: [...forms].map((f) => Buffer.from(f, 'utf8')), profiles: new Set([profile]) });
+  needles.set(value, { bytes: [...forms].map((f) => Buffer.from(f, 'utf8')), profiles: new Set([profile]), kinds: new Set([kind]) });
   return true;
 }
 
@@ -175,14 +191,26 @@ export async function runSecurityCheck({ userData, restoreDir, scanRoots, log }:
       add({ check: 'jar_unreadable', severity: 'medium', count: 1, where: p.label });
     }
     report.jarCookies = jar.length;
-    for (const c of jar) addNeedle(needles, c.value, p.label) ? report.needles++ : report.skippedShort++;
+    for (const c of jar) addNeedle(needles, c.value, p.label, describeCookie(p.label, c)) ? report.needles++ : report.skippedShort++;
 
-    const snapshot = protectedStorage ? inspectSnapshot(restoreDir, p, cookieDomainsFor(p.platformId)) : { state: 'not_checked', values: [] };
+    const snapshot = protectedStorage ? inspectSnapshot(restoreDir, p, cookieDomainsFor(p.platformId)) : { state: 'not_checked', cookies: [] };
     report.snapshot = snapshot.state;
     if (snapshot.state !== 'none' && snapshot.state !== 'ok' && snapshot.state !== 'not_checked') {
       add({ check: 'snapshot_not_restorable', severity: 'medium', count: 1, where: `${p.label}: ${snapshot.state}` });
     }
-    for (const v of snapshot.values) addNeedle(needles, v, p.label) ? report.needles++ : report.skippedShort++;
+    for (const c of snapshot.cookies) {
+      const kind = `${p.label} ${c.domain} ${c.httpOnly ? 'httpOnly' : 'script-readable'} session (sealed)`;
+      addNeedle(needles, c.value.reveal(), p.label, kind) ? report.needles++ : report.skippedShort++;
+    }
+  }
+
+  // Proxy credentials are secrets too: search for them like cookie values.
+  for (const [i, p] of profiles.entries()) {
+    const credentials = protectedStorage ? readProxyCredentials(join(userData, 'proxy-secrets'), p) : null;
+    if (!credentials) continue;
+    for (const [kind, value] of [['proxy-username', credentials.username], ['proxy-password', credentials.password]] as const) {
+      addNeedle(needles, value, p.label, `${p.label} ${kind}`) ? profileReports[i]!.needles++ : profileReports[i]!.skippedShort++;
+    }
   }
 
   // Account boundary: the same secret value in two profiles means one account in two profiles.
@@ -191,8 +219,13 @@ export async function runSecurityCheck({ userData, restoreDir, scanRoots, log }:
 
   // Phase 3: search files.
   const scan = { roots: roots.length, files: 0, bytes: 0, unreadable: 0, skippedLarge: 0 };
+  // A folder given twice (or nested in another root) is searched once.
+  const scanned = new Set<string>();
   for (const root of roots) {
     for (const file of walk(root.path)) {
+      const key = resolve(file).toLowerCase();
+      if (scanned.has(key)) continue;
+      scanned.add(key);
       let size: number;
       try {
         size = statSync(file).size;
@@ -214,8 +247,21 @@ export async function runSecurityCheck({ userData, restoreDir, scanRoots, log }:
       scan.files++;
       scan.bytes += content.length;
       let hits = 0;
-      for (const needle of needles.values()) if (needle.bytes.some((b) => content.includes(b))) hits++;
-      if (hits > 0) add({ check: 'plaintext_secret_in_file', severity: 'high', count: hits, where: `${root.label}/${relative(root.path, file).split(sep).join('/')}` });
+      const kinds = new Map<string, number>();
+      for (const needle of needles.values()) {
+        if (!needle.bytes.some((b) => content.includes(b))) continue;
+        hits++;
+        for (const kind of needle.kinds) kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
+      }
+      if (hits > 0) {
+        add({
+          check: 'plaintext_secret_in_file',
+          severity: 'high',
+          count: hits,
+          where: `${root.label}/${relative(root.path, file).split(sep).join('/')}`,
+          matched: [...kinds].sort().map(([kind, n]) => `${kind} x${n}`),
+        });
+      }
     }
   }
   for (const needle of needles.values()) for (const b of needle.bytes) b.fill(0);

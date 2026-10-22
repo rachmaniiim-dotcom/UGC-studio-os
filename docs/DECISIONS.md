@@ -15,4 +15,6 @@ Product-owner decisions on the Gate 0 proposals (`docs/gate-0/ARCHITECTURE_REPOR
 | D5 | **Changed from the Gate 0 proposal.** Conflicting duplicate cookies are **rejected** (every entry in the group) with a non-sensitive diagnostic; the importer never picks the latest expiry. Exact duplicates collapse to one | Approved, implemented | 2026-10-22 |
 | D10 | **Changed.** Affiliate yellow-basket attachment stays an **automation objective**, not an assisted-only design. It is not assumed that ordinary TikTok scheduling supports shoppable product attachment; recorded as integration risk R-01 needing real validation | Approved | 2026-10-22 |
 | D11 | **Changed.** Google Flow stays the **preferred** video provider. Authentication-portability risks and a possible authorized API fallback are documented (risk R-02) | Approved | 2026-10-22 |
+| D17 | Gate 2 manual Kalodata validation run by the owner (export never seen by Claude); results in `docs/gate-2/GATE2_REPORT.md` | Done | 2026-10-22 |
+| D18 | Gate 3 direction approved with changes: dedicated proxy per Account Bundle (no proxy purchasing/provider management); paste or file import of Cookie-Editor JSON in Add/Edit Account; Q1–Q7 as in `docs/gate-3/GATE3_PLAN.md`; proxy-isolation PoC before the full UI | Approved | 2026-10-22 |
 | D4, D6, D7, D8, D9, D12 | Not yet decided | Open | — |

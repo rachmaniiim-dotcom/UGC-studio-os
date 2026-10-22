@@ -12,6 +12,7 @@ import type { RuntimeConfig } from './config.js';
 import { replaceCookies, type LoadResult } from './electron-cookies.js';
 import { cookieEncryptionFuseEnabled } from './fuses.js';
 import { PROFILE_ID, type ImportSummary, type PocProfile, type ProfileStore } from './profiles.js';
+import { ProxyError, type ProxyService } from './proxy.js';
 import { osCryptKeyPersisted, type SessionSync } from './session-sync.js';
 import { profileSession } from './sessions.js';
 import { probePermitted, probeSession } from './status.js';
@@ -25,13 +26,22 @@ export type IpcErrorCode =
   | 'platform_not_active'
   | 'automated_check_not_permitted'
   | 'protected_key_not_ready'
+  | 'invalid_proxy'
+  | 'proxy_required'
+  | 'proxy_not_configured'
+  | 'proxy_not_ready'
+  | 'protected_storage_unavailable'
   | 'file_unreadable'
   | 'internal_error';
 
-export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: { code: IpcErrorCode } };
+/** `details` carries sanitized issue codes (e.g. which proxy field is invalid), never input values. */
+export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: { code: IpcErrorCode; details?: readonly string[] } };
 
 class IpcError extends Error {
-  constructor(readonly code: IpcErrorCode) {
+  constructor(
+    readonly code: IpcErrorCode,
+    readonly details: readonly string[] = [],
+  ) {
     super(code);
   }
 }
@@ -44,6 +54,7 @@ export interface IpcDeps {
   /** This run's platform; null when none is configured (every profile call then fails). */
   readonly platform: PlatformDefinition | null;
   readonly sync: SessionSync | null;
+  readonly proxies: ProxyService | null;
   readonly userData: string;
 }
 
@@ -97,12 +108,34 @@ export interface ImportOutcome {
   readonly profile: PocProfile;
 }
 
-export function registerIpc({ config, store, log, mainWindow, platform, sync, userData }: IpcDeps): void {
+export function registerIpc({ config, store, log, mainWindow, platform, sync, proxies, userData }: IpcDeps): void {
   const sessionOf = (profile: PocProfile) => profileSession(profile.partition, config, platform, log);
   const devTools = config.synthetic;
   const fresh = (profile: PocProfile): PocProfile => store.get(profile.id) ?? profile;
   // Import and Clear run inside the profile's sync queue, so the snapshot sees one consistent jar.
   const applyChange = <T>(profile: PocProfile, change: () => Promise<T>): Promise<T> => (sync ? sync.apply(profile.id, change) : change());
+  // Nothing in a profile's partition may reach the network until its proxy (if required) passed a test.
+  const requireNetworkReady = async (profile: PocProfile): Promise<void> => {
+    if (!proxies) {
+      if (!config.synthetic) throw new IpcError('proxy_not_configured');
+      return;
+    }
+    try {
+      await proxies.ensureReady(profile);
+    } catch (err) {
+      if (err instanceof ProxyError) throw new IpcError(err.code as IpcErrorCode);
+      throw err;
+    }
+  };
+  const proxyCall = async <T>(run: () => Promise<T>): Promise<T> => {
+    if (!proxies) throw new IpcError('platform_not_active');
+    try {
+      return await run();
+    } catch (err) {
+      if (err instanceof ProxyError) throw new IpcError(err.code as IpcErrorCode, err.details);
+      throw err;
+    }
+  };
 
   const handlers: Record<string, (payload: unknown) => Promise<unknown>> = {
     'poc:get-platform': async (payload): Promise<PlatformInfo | null> => {
@@ -181,6 +214,7 @@ export function registerIpc({ config, store, log, mainWindow, platform, sync, us
       const { profile, platform: active } = requireProfile(store, platform, requireObject(payload, ['profileId']));
       // Platforms that forbid automation get no app-initiated request, ever (C3).
       if (!probePermitted(active)) throw new IpcError('automated_check_not_permitted');
+      await requireNetworkReady(profile);
       const everImported = (profile.lastImport?.browserLoaded ?? 0) > 0 || profile.sessionSync.savedCount > 0;
       const probe = await probeSession(sessionOf(profile), active, everImported);
       log.info('session_checked', { profileId: profile.id, status: probe.status, reason: probe.reason });
@@ -207,9 +241,32 @@ export function registerIpc({ config, store, log, mainWindow, platform, sync, us
       const { profile, platform: active } = requireProfile(store, platform, request);
       const page = request['page'];
       if (typeof page !== 'string' || !Object.hasOwn(active.pages, page)) throw new IpcError('invalid_request');
+      await requireNetworkReady(profile);
       sessionOf(profile);
-      openSiteWindow(profile.partition, `${profile.label} — ${page}`, active.pages[page]!, active.navigationDomains, devTools, log);
+      const win = openSiteWindow(profile.partition, `${profile.label} — ${page}`, active.pages[page]!, active.navigationDomains, devTools, log);
+      proxies?.watchWindow(win.webContents);
       return { opened: true };
+    },
+
+    // Sets, replaces or (synthetic only) removes the profile's dedicated proxy. The password is sealed at once and never returned.
+    'poc:set-proxy': async (payload) => {
+      const request = requireObject(payload, ['profileId', 'proxy']);
+      const { profile } = requireProfile(store, platform, request);
+      const input = request['proxy'];
+      if (input !== null) {
+        if (typeof input !== 'object' || Array.isArray(input)) throw new IpcError('invalid_request');
+        const keys = Object.keys(input);
+        const allowed = ['protocol', 'host', 'port', 'username', 'password'];
+        if (!keys.every((k) => allowed.includes(k)) || !['protocol', 'host', 'port'].every((k) => keys.includes(k))) {
+          throw new IpcError('invalid_request');
+        }
+      }
+      return proxyCall(() => proxies!.configure(profile, input as Parameters<ProxyService['configure']>[1]));
+    },
+
+    'poc:test-proxy': async (payload) => {
+      const { profile } = requireProfile(store, platform, requireObject(payload, ['profileId']));
+      return proxyCall(() => proxies!.test(profile));
     },
 
     'poc:clear-profile': async (payload) => {
@@ -248,7 +305,7 @@ export function registerIpc({ config, store, log, mainWindow, platform, sync, us
       try {
         return { ok: true, data: await handler(args[0]) };
       } catch (err) {
-        if (err instanceof IpcError) return { ok: false, error: { code: err.code } };
+        if (err instanceof IpcError) return { ok: false, error: { code: err.code, ...(err.details.length ? { details: err.details } : {}) } };
         log.error('ipc_handler_failed', { channel, err });
         return { ok: false, error: { code: 'internal_error' } };
       }
