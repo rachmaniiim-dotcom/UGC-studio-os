@@ -4,6 +4,8 @@
 **Date:** 2026-10-22
 **Spec:** MASTER_SPEC.md v1.0
 
+> **Update after owner review (2026-10-22):** the owner's decisions are recorded in `docs/DECISIONS.md` and override this report where they differ: conflicting duplicate cookies are rejected (D5); yellow-basket attachment stays an automation objective (D10); Google Flow stays the preferred provider (D11). Gate 1 results are in `docs/gate-1/GATE1_REPORT.md`.
+
 Feature status legend (per spec §21): **implemented / tested / manually verified / untested / blocked / planned**. Everything in this report is **planned**. Nothing is implemented.
 
 ---
@@ -153,7 +155,7 @@ Electron Fuses (set at package time): `RunAsNode` off, `EnableNodeOptionsEnviron
 | SameSite | `no_restriction`→`none`; `lax`; `strict`; `unspecified`/`null`→`unspecified`. `none` without `secure` → **rejected** (never silently "fixed") |
 | Expiry | `expirationDate ≤ now` → **skipped: expired**. `session:true` or missing expiry → session cookie |
 | Partition | `partitionKey` present → kept in the normalized model; if the target adapter can't honor it → **skipped: unsupported partitioned cookie** (never imported as unpartitioned, which would change its security scope) |
-| Duplicates | identity = (name, domain, hostOnly, path, partitionKey). Exact duplicates collapse. Conflicting duplicates: keep the latest expiry and report the conflict (proposal, see D5) |
+| Duplicates | identity = (name, domain, hostOnly, path, partitionKey). Exact duplicates collapse. Conflicting duplicates: **every entry in the group is rejected** with a non-sensitive diagnostic (D5, as approved) |
 | Security | the importer never sets `secure`/`httpOnly` to false or loosens SameSite relative to the source |
 
 **Report (non-secret):** format detected, target platform, counts examined/imported/skipped/rejected, reason-code histogram, cookie **names** optionally (decision D6: some names are themselves sensitive-ish, so I'd default to counts only), timestamp, resulting status. Never values.
@@ -441,13 +443,13 @@ Before Gate 2, you should read Kalodata's Terms regarding automated access, data
 - **D2** Accept the 4-workspace layout (§3).
 - **D3** Enable the Electron `EnableCookieEncryption` fuse and the other fuses (§4, §11).
 - **D4** M1 constraint: one PlatformSession per platform per bundle (`UNIQUE(bundle_id, platform)`).
-- **D5** Conflicting-duplicate cookie rule: keep the latest expiry and report (alternative: reject the whole import).
+- **D5** Conflicting-duplicate cookie rule. *Decided: reject all conflicting entries (see `docs/DECISIONS.md`).*
 - **D6** Import report shows counts/reasons only, no cookie names, by default.
 - **D7** Installer tooling (electron-builder NSIS proposed) and whether to obtain a code-signing certificate later (unsigned builds trigger SmartScreen warnings).
 - **D8** SQLite library: `better-sqlite3` (proposed) vs `node:sqlite`.
 - **D9** Secret scanning: gitleaks pre-commit + GitHub secret scanning.
-- **D10** Accept "assisted workflow" as the default target for Showcase/yellow basket/shoppable scheduling, pending platform validation.
-- **D11** Accept Google Flow as high-risk/unverified, with a paid API provider as a documented fallback.
+- **D10** Accept "assisted workflow" as the default target for Showcase/yellow basket/shoppable scheduling, pending platform validation. *Decided otherwise: automation stays the objective; shoppable scheduling is risk R-01.*
+- **D11** Accept Google Flow as high-risk/unverified, with a paid API provider as a documented fallback. *Decided: Flow stays preferred; portability risk and API fallback in R-02.*
 - **D12** Commit to reading Kalodata/TikTok/Google ToS before the respective automation gates.
 
 ---

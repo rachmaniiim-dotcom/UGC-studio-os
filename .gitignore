@@ -1,0 +1,17 @@
+node_modules/
+dist/
+out/
+*.tsbuildinfo
+test-results/
+playwright-report/
+.e2e-tmp/
+
+# Never commit browser state, vault data or cookie exports.
+userData/
+vault/
+*.cookies.json
+cookies*.json
+*cookie-export*
+*.har
+.env
+.env.*

@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["ES2023", "DOM"],
+    "composite": false,
+    "declaration": false,
+    "allowJs": false,
+    "rootDir": "."
+  },
+  "include": ["packages/*/test", "apps/desktop/test", "apps/desktop/e2e", "apps/desktop/playwright.config.ts", "scripts/test"]
+}
