@@ -1,5 +1,5 @@
 import { _electron as electron, expect, type ElectronApplication, type Page } from '@playwright/test';
-import { FuseV1Options, FuseVersion, flipFuses } from '@electron/fuses';
+import { FuseState, FuseV1Options, FuseVersion, flipFuses, getCurrentFuseWire } from '@electron/fuses';
 import { cpSync, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -31,6 +31,7 @@ export interface Profile {
     browserLoaded: number;
     browserFailures: Record<string, number>;
   };
+  sessionRestore: null | { at: string; state: string; count: number; error: string | null };
 }
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: { code: string } };
@@ -182,18 +183,26 @@ export function filesContaining(dir: string, needle: string): string[] {
   return hits;
 }
 
+const ELECTRON_VERSION = (require('electron/package.json') as { version: string }).version;
+
 /**
- * Copy of the Electron binary with only EnableCookieEncryption flipped on.
- * Other production fuses (e.g. disabling --inspect) would stop Playwright
- * from driving the app, so they are verified separately once packaging exists.
+ * Copy of the Electron binary with EnableCookieEncryption explicitly set to
+ * `enabled`, so tests don't depend on the state of the development binary in
+ * node_modules (which enable-dev-fuses.mjs flips). The fuse is re-checked on
+ * every call. Other production fuses (e.g. disabling --inspect) would stop
+ * Playwright from driving the app, so they are verified separately once
+ * packaging exists.
  */
-export async function fusedElectron(): Promise<string> {
-  const source = dirname(DEFAULT_ELECTRON);
-  const target = join(tmpdir(), 'ugc-electron-cookie-encryption');
+export async function electronWithCookieEncryption(enabled: boolean): Promise<string> {
+  const target = join(tmpdir(), `ugc-electron-${ELECTRON_VERSION}-cookie-encryption-${enabled ? 'on' : 'off'}`);
   const binary = join(target, basename(DEFAULT_ELECTRON));
-  if (!existsSync(binary)) {
-    cpSync(source, target, { recursive: true });
-    await flipFuses(binary, { version: FuseVersion.V1, [FuseV1Options.EnableCookieEncryption]: true });
+  if (!existsSync(binary)) cpSync(dirname(DEFAULT_ELECTRON), target, { recursive: true });
+  const wanted = enabled ? FuseState.ENABLE : FuseState.DISABLE;
+  if ((await getCurrentFuseWire(binary))[FuseV1Options.EnableCookieEncryption] !== wanted) {
+    await flipFuses(binary, { version: FuseVersion.V1, [FuseV1Options.EnableCookieEncryption]: enabled });
   }
   return binary;
 }
+
+export const fusedElectron = (): Promise<string> => electronWithCookieEncryption(true);
+export const unfusedElectron = (): Promise<string> => electronWithCookieEncryption(false);

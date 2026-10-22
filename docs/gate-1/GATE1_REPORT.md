@@ -5,6 +5,8 @@
 **Runtime under test:** Electron 44.9.3 (Chromium 152.0.7977.167, Node 24.22.0), Playwright 1.64.1, Vitest 5.0.5, TypeScript 6.0.2.
 **Data:** synthetic only. No real site, account or cookie was used.
 
+> **Update (2026-10-22):** Windows validation and the Gate 1 hardening pass are in [`WINDOWS_HARDENING_REPORT.md`](WINDOWS_HARDENING_REPORT.md). It supersedes §6 below and changes R-10 (session cookies are now restored by a DPAPI-sealed prototype).
+
 Status legend (spec §21): **implemented**, **tested**, **manually verified**, **untested**, **blocked**, **planned**.
 
 ---

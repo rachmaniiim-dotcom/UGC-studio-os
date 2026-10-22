@@ -16,6 +16,7 @@ import {
   profiles,
   quit,
   stubOpenDialog,
+  unfusedElectron,
   workDir,
   writeExport,
   type Profile,
@@ -161,7 +162,8 @@ test('no synthetic secret reaches logs, profile metadata or bridge responses', a
 test('an Electron binary without the cookie-encryption fuse refuses imports by default', async () => {
   const dir = await workDir('fuse-guard');
   const file = await writeExport(dir, 'valid', [cookieEditorEntry({ value: site.addUser('user-guard') })]);
-  const run = await launch({ userData: join(dir, 'userData'), site, allowUnencryptedSynthetic: false });
+  const executablePath = await unfusedElectron();
+  const run = await launch({ userData: join(dir, 'userData'), site, executablePath, allowUnencryptedSynthetic: false });
   try {
     const [a] = await profiles(run);
     await stubOpenDialog(run, file);
@@ -188,7 +190,8 @@ test('without the fuse, cookie values sit in plaintext in the partition database
   const userData = join(dir, 'userData');
   const token = site.addUser('user-plain');
   const file = await writeExport(dir, 'valid', [cookieEditorEntry({ value: token })]);
-  const run = await launch({ userData, site });
+  const executablePath = await unfusedElectron();
+  const run = await launch({ userData, site, executablePath });
   const [a] = await profiles(run);
   try {
     await importFile(run, a!.id, file);

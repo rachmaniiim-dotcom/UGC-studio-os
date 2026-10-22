@@ -36,13 +36,15 @@ export function toElectronCookie(
 
 export interface LoadResult {
   readonly loaded: number;
+  /** The cookies the browser accepted. Holds secrets: never log or return to a renderer. */
+  readonly cookies: readonly NormalizedCookie[];
   readonly failures: Partial<Record<BrowserLoadIssue, number>>;
 }
 
 /** Replaces all cookies in a partition with `cookies`, then flushes them to disk. */
 export async function replaceCookies(ses: Session, cookies: readonly NormalizedCookie[]): Promise<LoadResult> {
   await ses.clearStorageData({ storages: ['cookies'] });
-  let loaded = 0;
+  const accepted: NormalizedCookie[] = [];
   const failures: Partial<Record<BrowserLoadIssue, number>> = {};
   for (const cookie of cookies) {
     const converted = toElectronCookie(cookie);
@@ -52,12 +54,12 @@ export async function replaceCookies(ses: Session, cookies: readonly NormalizedC
     }
     try {
       await ses.cookies.set(converted.details);
-      loaded += 1;
+      accepted.push(cookie);
     } catch {
       // Chromium's own rejection message can echo cookie content; keep only the code.
       failures.rejected_by_browser = (failures.rejected_by_browser ?? 0) + 1;
     }
   }
   await ses.cookies.flushStore();
-  return { loaded, failures };
+  return { loaded: accepted.length, cookies: accepted, failures };
 }

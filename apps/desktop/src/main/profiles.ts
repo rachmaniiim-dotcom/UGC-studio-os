@@ -19,6 +19,15 @@ export interface ImportSummary {
   readonly browserFailures: Partial<Record<BrowserLoadIssue, number>>;
 }
 
+/** Non-secret outcome of sealing or restoring a profile's session cookies. */
+export interface SessionRestoreSummary {
+  readonly at: string;
+  readonly state: 'sealed' | 'not_sealed' | 'restored' | 'failed';
+  readonly count: number;
+  /** A reason code only; never cookie content or OS error text. */
+  readonly error: string | null;
+}
+
 export interface PocProfile {
   readonly id: string;
   readonly label: string;
@@ -27,6 +36,8 @@ export interface PocProfile {
   readonly status: SessionStatus;
   readonly statusReason: string | null;
   readonly lastImport: ImportSummary | null;
+  /** Session cookies (no expiry) sealed for restore across restarts, if any. */
+  readonly sessionRestore: SessionRestoreSummary | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -46,6 +57,7 @@ function newProfile(label: string, now: string): PocProfile {
     status: 'never_configured',
     statusReason: null,
     lastImport: null,
+    sessionRestore: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -81,7 +93,8 @@ export class ProfileStore {
     try {
       const parsed = JSON.parse(readFileSync(this.#path, 'utf8')) as StoreFile;
       if (parsed.version === 1 && Array.isArray(parsed.profiles) && parsed.profiles.every(isProfile)) {
-        return parsed.profiles;
+        // Stores written before session restore existed have no sessionRestore field.
+        return parsed.profiles.map((p) => ({ ...p, sessionRestore: p.sessionRestore ?? null }));
       }
       throw new Error('profile store has an unexpected shape');
     } catch (err) {
@@ -108,7 +121,7 @@ export class ProfileStore {
     return this.#profiles.find((p) => p.id === id);
   }
 
-  update(id: string, patch: Partial<Pick<PocProfile, 'status' | 'statusReason' | 'lastImport'>>): PocProfile {
+  update(id: string, patch: Partial<Pick<PocProfile, 'status' | 'statusReason' | 'lastImport' | 'sessionRestore'>>): PocProfile {
     const existing = this.get(id);
     if (!existing) throw new Error('unknown profile');
     const updated: PocProfile = { ...existing, ...patch, updatedAt: new Date().toISOString() };

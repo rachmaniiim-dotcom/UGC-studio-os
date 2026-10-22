@@ -6,7 +6,7 @@ Multi-account AI UGC research, production and publishing platform. Windows deskt
 
 - Spec: `MASTER_SPEC.md` (kept by the product owner)
 - Architecture: [`docs/gate-0/ARCHITECTURE_REPORT.md`](docs/gate-0/ARCHITECTURE_REPORT.md)
-- Gate 1 results: [`docs/gate-1/GATE1_REPORT.md`](docs/gate-1/GATE1_REPORT.md)
+- Gate 1 results: [`docs/gate-1/GATE1_REPORT.md`](docs/gate-1/GATE1_REPORT.md) · Windows validation and hardening: [`docs/gate-1/WINDOWS_HARDENING_REPORT.md`](docs/gate-1/WINDOWS_HARDENING_REPORT.md)
 - Decisions: [`docs/DECISIONS.md`](docs/DECISIONS.md) · Risks: [`docs/RISK_REGISTER.md`](docs/RISK_REGISTER.md)
 
 ## Layout
@@ -22,13 +22,14 @@ scripts/               Repository checks
 
 ## Commands
 
-Requires Node ≥ 22.12 and pnpm 10.28 (`corepack enable`).
+Requires Node ≥ 22.12 and pnpm 10.28 (`corepack enable`). The npm scripts call `pnpm` themselves, so it must be on PATH. On Windows without an admin shell, use `corepack enable pnpm --install-directory %LOCALAPPDATA%\corepack-shims` and add that folder to your user PATH.
 
 ```sh
-pnpm install
+pnpm install            # also downloads and verifies the pinned Electron binary (postinstall)
 pnpm typecheck          # builds everything, then typechecks the tests
 pnpm test:unit          # Vitest
 pnpm test:e2e           # Playwright driving real Electron (needs a desktop session)
+                        # Windows: set UGC_E2E_NATIVE_DIALOG=1 to also drive the real file dialog (takes focus)
 pnpm check:secrets      # scans the repo for secrets and synthetic canaries
 ```
 

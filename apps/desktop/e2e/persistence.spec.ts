@@ -1,4 +1,6 @@
 import { expect, test } from '@playwright/test';
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { cookieEditorEntry, sessionCookieEntry, startSyntheticSite, type SyntheticSite } from '@ugc/test-fixtures';
 import { importFile, launch, ok, openSite, partitionCookies, profiles, quit, workDir, writeExport, type Profile } from './harness.js';
 
@@ -44,9 +46,10 @@ test('persistent cookies and profile metadata survive an app restart', async () 
   }
 });
 
-// Characterization: records what Electron 44 does with cookies that have no
-// expiry. Chromium normally drops session cookies when the browser exits.
-test('session cookies (no expirationDate) do not survive a restart', async () => {
+// Characterization (R-10): Electron 44 itself drops cookies without an expiry
+// when the app exits. Only the sealed restore record (session-restore.spec.ts)
+// brings them back; without it they are gone and the status says so.
+test('session cookies (no expirationDate) do not survive a restart without the sealed record', async () => {
   const dir = await workDir('session-cookie');
   const token = site.addUser('user-session');
   const file = await writeExport(dir, 'session', [sessionCookieEntry({ value: token })]);
@@ -60,10 +63,16 @@ test('session cookies (no expirationDate) do not survive a restart', async () =>
   } finally {
     await quit(first);
   }
+  rmSync(join(userData, 'session-restore'), { recursive: true, force: true });
 
   const second = await launch({ userData, site });
   try {
     expect(await partitionCookies(second, a!.partition)).toEqual([]);
+    expect((await profiles(second))[0]).toMatchObject({
+      status: 'locked_unavailable',
+      statusReason: 'session_restore_failed',
+      sessionRestore: { state: 'failed', error: 'record_missing' },
+    });
     expect(await ok<Profile>(second, 'checkStatus', a!.id)).toMatchObject({ status: 'expired', statusReason: 'no_session_cookie' });
   } finally {
     await quit(second);

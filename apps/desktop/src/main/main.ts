@@ -7,6 +7,7 @@ import { registerAppScheme, serveAppProtocol } from './app-protocol.js';
 import { readRuntimeConfig } from './config.js';
 import { registerIpc } from './ipc.js';
 import { ProfileStore } from './profiles.js';
+import { restoreSessionCookies } from './session-restore.js';
 import { hardenSession, profileSession } from './sessions.js';
 import { createMainWindow } from './windows.js';
 
@@ -32,11 +33,23 @@ app.on('web-contents-created', (_event, contents) => {
   contents.on('render-process-gone', (_e, details) => log.warn('renderer_gone', { reason: details.reason }));
 });
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
   store = new ProfileStore(join(app.getPath('userData'), 'poc-profiles.json'));
   hardenSession(session.defaultSession, { ...config, synthetic: false }, log);
+  const restoreDir = join(app.getPath('userData'), 'session-restore');
+  // Restore sealed session cookies before any window or IPC handler exists.
+  for (const profile of store.list()) {
+    const restored = await restoreSessionCookies(restoreDir, profile, profileSession(profile.partition, config, log), log);
+    if (!restored) continue;
+    store.update(profile.id, {
+      sessionRestore: restored,
+      ...(restored.state === 'restored'
+        ? { status: 'imported_unverified', statusReason: 'session_restored' }
+        : { status: 'locked_unavailable', statusReason: 'session_restore_failed' }),
+    });
+  }
   serveAppProtocol(join(here, '..', 'renderer'));
-  registerIpc({ config, store, log, mainWindow: () => mainWindow });
+  registerIpc({ config, store, log, mainWindow: () => mainWindow, restoreDir });
   mainWindow = createMainWindow(join(here, '..', 'preload', 'preload.cjs'), config.synthetic, log);
   mainWindow.on('closed', () => (mainWindow = null));
   log.info('app_ready', { synthetic: config.synthetic, profiles: store.list().length });

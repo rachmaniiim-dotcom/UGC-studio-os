@@ -5,3 +5,12 @@ export { SecretValue, REDACTED } from './redaction/secret.js';
 export { redactText, redactValue } from './redaction/redact.js';
 export { createLogger, type Logger, type LogLevel } from './redaction/logger.js';
 export { SESSION_STATUSES, isSessionStatus, type SessionStatus } from './session/status.js';
+export {
+  RESTORE_PAYLOAD_VERSION,
+  encodeSessionRestore,
+  decodeSessionRestore,
+  restorableSessionCookies,
+  type RestoreBinding,
+  type RestoreDecodeError,
+  type RestoreDecodeResult,
+} from './session/restore-payload.js';

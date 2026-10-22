@@ -6,6 +6,7 @@ import { replaceCookies, type LoadResult } from './electron-cookies.js';
 import { cookieEncryptionFuseEnabled } from './fuses.js';
 import { PROFILE_ID, type ImportSummary, type PocProfile, type ProfileStore } from './profiles.js';
 import { profileSession } from './sessions.js';
+import { removeSealedSession, sealSessionCookies } from './session-restore.js';
 import { probeSyntheticSession } from './status.js';
 import { openSiteWindow } from './windows.js';
 
@@ -31,6 +32,8 @@ export interface IpcDeps {
   readonly store: ProfileStore;
   readonly log: Logger;
   readonly mainWindow: () => BrowserWindow | null;
+  /** Directory holding the sealed session-cookie records. */
+  readonly restoreDir: string;
 }
 
 function requireObject(payload: unknown, keys: readonly string[]): Record<string, unknown> {
@@ -69,7 +72,7 @@ export interface ImportOutcome {
   readonly profile: PocProfile;
 }
 
-export function registerIpc({ config, store, log, mainWindow }: IpcDeps): void {
+export function registerIpc({ config, store, log, mainWindow, restoreDir }: IpcDeps): void {
   const sessionOf = (profile: PocProfile) => profileSession(profile.partition, config, log);
   const devTools = config.synthetic;
 
@@ -125,6 +128,7 @@ export function registerIpc({ config, store, log, mainWindow }: IpcDeps): void {
           status: load.loaded > 0 ? 'imported_unverified' : profile.status,
           statusReason: null,
           lastImport: summarize(result.report, load),
+          sessionRestore: sealSessionCookies(restoreDir, profile, load.cookies, log),
         });
         return { canceled: false, profile: updated };
       } finally {
@@ -158,8 +162,9 @@ export function registerIpc({ config, store, log, mainWindow }: IpcDeps): void {
       await ses.clearStorageData();
       await ses.clearCache();
       await ses.cookies.flushStore();
+      removeSealedSession(restoreDir, profile.id);
       log.info('profile_cleared', { profileId: profile.id });
-      return store.update(profile.id, { status: 'never_configured', statusReason: null, lastImport: null });
+      return store.update(profile.id, { status: 'never_configured', statusReason: null, lastImport: null, sessionRestore: null });
     },
   };
 

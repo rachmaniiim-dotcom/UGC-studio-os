@@ -12,6 +12,13 @@ interface ImportSummary {
   browserFailures: Record<string, number>;
 }
 
+interface SessionRestore {
+  at: string;
+  state: string;
+  count: number;
+  error: string | null;
+}
+
 interface Profile {
   id: string;
   label: string;
@@ -19,6 +26,7 @@ interface Profile {
   status: string;
   statusReason: string | null;
   lastImport: ImportSummary | null;
+  sessionRestore: SessionRestore | null;
 }
 
 type Result<T> = { ok: true; data: T } | { ok: false; error: { code: string } };
@@ -70,6 +78,12 @@ function render(profiles: Profile[]): void {
       status.dataset['status'] = profile.status;
       card.append(status, el('p', `Partition: ${profile.partition}`, 'meta'));
       if (profile.lastImport) card.append(el('pre', describeImport(profile.lastImport)));
+      if (profile.sessionRestore) {
+        const r = profile.sessionRestore;
+        const line = el('p', `Session cookies: ${r.state}, ${r.count}${r.error ? ` (${r.error})` : ''} — ${r.at}`, 'meta restore');
+        line.dataset['restoreState'] = r.state;
+        card.append(line);
+      }
 
       const actions = el('div', undefined, 'actions');
       const button = (label: string, action: () => Promise<Result<unknown>>): void => {
