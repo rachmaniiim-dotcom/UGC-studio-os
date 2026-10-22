@@ -71,7 +71,7 @@ test('session cookies (no expirationDate) do not survive a restart without the s
     expect((await profiles(second))[0]).toMatchObject({
       status: 'locked_unavailable',
       statusReason: 'session_restore_failed',
-      sessionRestore: { state: 'failed', error: 'record_missing' },
+      sessionSync: { restore: { state: 'failed', error: 'record_missing' } },
     });
     expect(await ok<Profile>(second, 'checkStatus', a!.id)).toMatchObject({ status: 'expired', statusReason: 'no_session_cookie' });
   } finally {

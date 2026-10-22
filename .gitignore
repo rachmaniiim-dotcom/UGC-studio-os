@@ -6,12 +6,31 @@ test-results/
 playwright-report/
 .e2e-tmp/
 
-# Never commit browser state, vault data or cookie exports.
+# Never commit browser state, vault data, session snapshots or cookie exports.
+# scripts/check-no-secrets.mjs (pre-commit hook) also blocks these if force-added.
 userData/
 vault/
+ugc-private/
+session-restore/
+Partitions/
+*.sealed
+*.rev
 *.cookies.json
 cookies*.json
+*cookie*.json
 *cookie-export*
 *.har
 .env
 .env.*
+# Chromium's cookie DB. Not a bare "Cookies": on Windows git ignores case and
+# that would also hide source folders named cookies/.
+/Cookies
+**/Network/Cookies
+Cookies-journal
+Local State
+Login Data
+poc-profiles.json
+logs/
+*.log
+*.tmp
+security-check-report*

@@ -7,10 +7,31 @@ export { createLogger, type Logger, type LogLevel } from './redaction/logger.js'
 export { SESSION_STATUSES, isSessionStatus, type SessionStatus } from './session/status.js';
 export {
   RESTORE_PAYLOAD_VERSION,
+  REVISION_RECORD_VERSION,
   encodeSessionRestore,
   decodeSessionRestore,
+  encodeRevisionRecord,
+  decodeRevisionRecord,
   restorableSessionCookies,
   type RestoreBinding,
   type RestoreDecodeError,
   type RestoreDecodeResult,
+  type RevisionDecodeResult,
 } from './session/restore-payload.js';
+export {
+  hostInDomains,
+  urlInDomains,
+  validatePlatformDefinition,
+  type AuthorizationConstraints,
+  type DefinitionIssue,
+  type PlatformDefinition,
+  type StatusCheck,
+} from './platforms/definition.js';
+export {
+  assertResearchUse,
+  ResearchUseNotAuthorized,
+  type ResearchProvider,
+  type ResearchProviderDescriptor,
+  type ResearchQuery,
+  type ResearchUse,
+} from './research/provider.js';

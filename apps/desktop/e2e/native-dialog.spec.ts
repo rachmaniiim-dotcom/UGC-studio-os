@@ -51,7 +51,7 @@ test('synthetic import through the real Windows file dialog, then restart and re
     await pickInDialog(first, A, { file });
     await expect(card(first.ui, A).locator('.status')).toHaveAttribute('data-status', 'imported_unverified');
     await expect(card(first.ui, A).locator('pre')).toContainText('imported 2');
-    await expect(card(first.ui, A).locator('.restore')).toHaveAttribute('data-restore-state', 'sealed');
+    await expect(card(first.ui, A).locator('.sync')).toHaveAttribute('data-saved-count', '1');
 
     await card(first.ui, A).getByRole('button', { name: 'Check status' }).click();
     await expect(card(first.ui, A).locator('.status')).toHaveAttribute('data-status', 'appears_authenticated');
@@ -67,7 +67,7 @@ test('synthetic import through the real Windows file dialog, then restart and re
 
   const second = await launch({ userData, site, executablePath, allowUnencryptedSynthetic: false });
   try {
-    await expect(card(second.ui, A).locator('.restore')).toHaveAttribute('data-restore-state', 'restored');
+    await expect(card(second.ui, A).locator('.sync')).toHaveAttribute('data-restore-state', 'restored');
     await card(second.ui, A).getByRole('button', { name: 'Check status' }).click();
     await expect(card(second.ui, A).locator('.status')).toHaveAttribute('data-status', 'appears_authenticated');
     await card(second.ui, B).getByRole('button', { name: 'Check status' }).click();
@@ -75,7 +75,7 @@ test('synthetic import through the real Windows file dialog, then restart and re
 
     await card(second.ui, A).getByRole('button', { name: 'Clear' }).click();
     await expect(card(second.ui, A).locator('.status')).toHaveAttribute('data-status', 'never_configured');
-    await expect(card(second.ui, A).locator('.restore')).toHaveCount(0);
+    await expect(card(second.ui, A).locator('.sync')).toHaveAttribute('data-saved-count', '0');
   } finally {
     await quit(second);
   }

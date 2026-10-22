@@ -3,7 +3,9 @@
 **Date:** 2026-10-22 · **Branch:** `ccr-aecbb29a-dleiwi` at `ceb64d6` (pushed; local = remote)
 **Scope:** review and planning. No real cookie was imported, no Kalodata account was used, nothing was automated, and no code was changed. Gate 3 has not started.
 
-**Verdict: not ready for real cookies yet.** Five small changes (§7, C1–C5) and two owner decisions (§8) come first. None of them needs the Gate 3 vault.
+> **Update (2026-10-22):** C1–C5 are implemented and tested on Windows. See [`PRE_GATE2_HARDENING_REPORT.md`](PRE_GATE2_HARDENING_REPORT.md). The procedure in §4 still needs the owner's authorization.
+
+**Verdict (at the time of this report): not ready for real cookies yet.** Five small changes (§7, C1–C5) and two owner decisions (§8) come first. None of them needs the Gate 3 vault.
 
 ## 1. How the current restore handles rotated session cookies
 

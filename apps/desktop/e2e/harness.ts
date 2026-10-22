@@ -1,5 +1,6 @@
 import { _electron as electron, expect, type ElectronApplication, type Page } from '@playwright/test';
 import { FuseState, FuseV1Options, FuseVersion, flipFuses, getCurrentFuseWire } from '@electron/fuses';
+import { execFile } from 'node:child_process';
 import { cpSync, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -31,7 +32,14 @@ export interface Profile {
     browserLoaded: number;
     browserFailures: Record<string, number>;
   };
-  sessionRestore: null | { at: string; state: string; count: number; error: string | null };
+  platformId: string;
+  sessionSync: {
+    revision: number;
+    savedCount: number;
+    savedAt: string | null;
+    saveError: string | null;
+    restore: null | { at: string; state: string; count: number; error: string | null };
+  };
 }
 
 export type Result<T> = { ok: true; data: T } | { ok: false; error: { code: string } };
@@ -58,16 +66,22 @@ export interface LaunchOptions {
   site: SyntheticSite;
   executablePath?: string;
   allowUnencryptedSynthetic?: boolean;
+  env?: Record<string, string>;
+  /** false: a non-synthetic run (no site mapping, no test certificate). Default true. */
+  synthetic?: boolean;
 }
 
 export async function launch(options: LaunchOptions): Promise<Running> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && k !== 'NODE_OPTIONS') env[k] = v;
-  env['UGC_POC_SYNTHETIC'] = '1';
   env['UGC_POC_USER_DATA'] = options.userData;
-  env['UGC_POC_SITE_ORIGIN'] = options.site.url('');
-  env['UGC_POC_SITE_CERT_FP'] = options.site.certificateFingerprint;
+  if (options.synthetic ?? true) {
+    env['UGC_POC_SYNTHETIC'] = '1';
+    env['UGC_POC_SITE_ORIGIN'] = options.site.url('');
+    env['UGC_POC_SITE_CERT_FP'] = options.site.certificateFingerprint;
+  }
   if (options.allowUnencryptedSynthetic ?? true) env['UGC_POC_ALLOW_UNENCRYPTED_SYNTHETIC'] = '1';
+  Object.assign(env, options.env ?? {});
 
   const app = await electron.launch({
     args: [MAIN],
@@ -156,6 +170,83 @@ export async function partitionCookies(run: Running, partition: string): Promise
 
 export async function quit(run: Running): Promise<void> {
   await run.app.close();
+}
+
+/**
+ * Simulates a crash: kills the app's whole process tree at once (no
+ * before-quit, no flush). Killing only the main process would leave
+ * Chromium's child processes holding the profile for a moment.
+ */
+export async function crash(run: Running): Promise<void> {
+  const proc = run.app.process();
+  const exited = new Promise<void>((resolve) => proc.once('exit', () => resolve()));
+  if (process.platform === 'win32') {
+    await new Promise<void>((resolve) => execFile('taskkill', ['/PID', String(proc.pid), '/T', '/F'], () => resolve()));
+  } else {
+    proc.kill('SIGKILL');
+  }
+  await exited;
+  // Children notice the parent is gone; give Windows a moment to release their handles.
+  await new Promise((r) => setTimeout(r, 500));
+}
+
+/**
+ * Waits until Chromium has written its encryption key to "Local State" (about
+ * 10 s after a brand-new profile's first launch). The app refuses real imports
+ * before that (protected_key_not_ready); crash tests wait for it too.
+ */
+export async function waitForProtectedKey(userData: string): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    try {
+      const state = JSON.parse(readFileSync(join(userData, 'Local State'), 'utf8')) as { os_crypt?: { encrypted_key?: string } };
+      if (state.os_crypt?.encrypted_key) return;
+    } catch {
+      // Not written yet.
+    }
+    if (Date.now() > deadline) throw new Error('encryption key not persisted');
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+
+/** Waits until the profile's saved snapshot revision reaches `revision`; returns the profile. */
+export async function waitForRevision(run: Running, profileId: string, revision: number): Promise<Profile> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const p = (await profiles(run)).find((x) => x.id === profileId);
+    if (p && p.sessionSync.revision >= revision) return p;
+    if (Date.now() > deadline) throw new Error(`revision ${revision} not reached (at ${p?.sessionSync.revision})`);
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+export interface SecurityCheckRun {
+  code: number | null;
+  /** Everything the command printed (stdout + stderr), for leak assertions. */
+  output: string;
+  report: {
+    result: string;
+    error?: string;
+    summary: { findings: number; high: number };
+    environment: Record<string, unknown>;
+    profiles: Array<{ label: string; jarCookies: number; needles: number; snapshot: string; cookieDb: null | { rows: number; plaintextRows: number; prefixes: Record<string, number> } }>;
+    scan: { files: number };
+    findings: Array<{ check: string; severity: string; count: number; where?: string }>;
+  };
+}
+
+/** Runs the C4 security-check command (the same script as `pnpm security-check`) with --json. */
+export function securityCheck(options: { userData: string; scan?: string[]; executablePath?: string }): Promise<SecurityCheckRun> {
+  const script = join(desktopDir, 'scripts', 'security-check.mjs');
+  const args = [script, '--json', '--user-data', options.userData, ...(options.scan ?? []).flatMap((d) => ['--scan', d])];
+  if (options.executablePath) args.push('--electron', options.executablePath);
+  return new Promise((resolve) => {
+    execFile(process.execPath, args, { timeout: 120_000 }, (err, stdout, stderr) => {
+      const code = err ? ((err as { code?: number }).code ?? 1) : 0;
+      const json = stdout.slice(stdout.indexOf('{'));
+      resolve({ code: typeof code === 'number' ? code : 1, output: stdout + stderr, report: JSON.parse(json) });
+    });
+  });
 }
 
 /** Finds Chromium's cookie database for a partition under userData. */

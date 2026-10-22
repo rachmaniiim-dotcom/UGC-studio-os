@@ -19,25 +19,43 @@ export interface ImportSummary {
   readonly browserFailures: Partial<Record<BrowserLoadIssue, number>>;
 }
 
-/** Non-secret outcome of sealing or restoring a profile's session cookies. */
+/** Outcome of restoring the sealed session-cookie snapshot at startup. */
 export interface SessionRestoreSummary {
   readonly at: string;
-  readonly state: 'sealed' | 'not_sealed' | 'restored' | 'failed';
+  readonly state: 'restored' | 'failed';
   readonly count: number;
   /** A reason code only; never cookie content or OS error text. */
   readonly error: string | null;
 }
 
+/**
+ * Non-secret state of the profile's session-cookie snapshot (C1). `revision`
+ * is the last revision durably written; it only grows and is one of the
+ * three copies a restore checks against rollback.
+ */
+export interface SessionSyncState {
+  readonly revision: number;
+  /** Session cookies in the last saved snapshot (0 = none saved). */
+  readonly savedCount: number;
+  readonly savedAt: string | null;
+  /** Why the last snapshot could not be sealed, if it couldn't. */
+  readonly saveError: string | null;
+  readonly restore: SessionRestoreSummary | null;
+}
+
+export const EMPTY_SYNC: SessionSyncState = { revision: 0, savedCount: 0, savedAt: null, saveError: null, restore: null };
+
 export interface PocProfile {
   readonly id: string;
   readonly label: string;
+  /** The platform this profile's single account belongs to (see platforms.ts). */
+  readonly platformId: string;
   /** Collision-resistant Electron partition, independent of the label. */
   readonly partition: string;
   readonly status: SessionStatus;
   readonly statusReason: string | null;
   readonly lastImport: ImportSummary | null;
-  /** Session cookies (no expiry) sealed for restore across restarts, if any. */
-  readonly sessionRestore: SessionRestoreSummary | null;
+  readonly sessionSync: SessionSyncState;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -48,16 +66,18 @@ interface StoreFile {
 }
 
 export const PROFILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const PLATFORM_ID = /^[a-z][a-z0-9-]{1,31}$/;
 
-function newProfile(label: string, now: string): PocProfile {
+function newProfile(label: string, platformId: string, now: string): PocProfile {
   return {
     id: randomUUID(),
     label,
+    platformId,
     partition: `persist:ps_${randomUUID()}`,
     status: 'never_configured',
     statusReason: null,
     lastImport: null,
-    sessionRestore: null,
+    sessionSync: EMPTY_SYNC,
     createdAt: now,
     updatedAt: now,
   };
@@ -76,37 +96,60 @@ function isProfile(value: unknown): value is PocProfile {
   );
 }
 
+/** Fills fields added after a store was written (Gate 1 stores have no platform or sync state). */
+function upgrade(p: PocProfile & { sessionRestore?: unknown }): PocProfile {
+  const { sessionRestore: _old, ...rest } = p;
+  const sync = rest.sessionSync;
+  const revision = sync && Number.isSafeInteger(sync.revision) && sync.revision >= 0 ? sync.revision : 0;
+  return {
+    ...rest,
+    platformId: typeof rest.platformId === 'string' && PLATFORM_ID.test(rest.platformId) ? rest.platformId : 'synthetic-poc',
+    sessionSync: sync ? { ...EMPTY_SYNC, ...sync, revision } : EMPTY_SYNC,
+  };
+}
+
+export type ProfilePatch = Partial<Pick<PocProfile, 'status' | 'statusReason' | 'lastImport' | 'sessionSync'>>;
+
 /**
  * Gate 1 stand-in for the SQLite metadata store: a small JSON file with
  * non-secret profile metadata. Replaced by SQLite migrations in Gate 3.
  */
 export class ProfileStore {
   readonly #path: string;
+  readonly #readOnly: boolean;
   #profiles: PocProfile[];
 
-  constructor(path: string) {
+  /**
+   * Seeds two profiles for `platformId` if the store has none for it.
+   * `readOnly` never writes (used by the security check) and seeds nothing.
+   */
+  constructor(path: string, platformId: string | null, options: { readOnly?: boolean } = {}) {
     this.#path = path;
+    this.#readOnly = options.readOnly ?? false;
     this.#profiles = this.#load();
+    if (!this.#readOnly && platformId && !this.#profiles.some((p) => p.platformId === platformId)) {
+      const now = new Date().toISOString();
+      const prefix = platformId === 'synthetic-poc' ? 'Synthetic Profile' : 'Profile';
+      this.#profiles = [...this.#profiles, newProfile(`${prefix} A`, platformId, now), newProfile(`${prefix} B`, platformId, now)];
+      this.#write(this.#profiles);
+    }
   }
 
   #load(): PocProfile[] {
     try {
       const parsed = JSON.parse(readFileSync(this.#path, 'utf8')) as StoreFile;
       if (parsed.version === 1 && Array.isArray(parsed.profiles) && parsed.profiles.every(isProfile)) {
-        // Stores written before session restore existed have no sessionRestore field.
-        return parsed.profiles.map((p) => ({ ...p, sessionRestore: p.sessionRestore ?? null }));
+        return parsed.profiles.map(upgrade);
       }
       throw new Error('profile store has an unexpected shape');
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
-    const now = new Date().toISOString();
-    const profiles = [newProfile('Synthetic Profile A', now), newProfile('Synthetic Profile B', now)];
-    this.#write(profiles);
-    return profiles;
+    return [];
   }
 
   #write(profiles: PocProfile[]): void {
+    if (this.#readOnly) throw new Error('profile store is read-only');
     mkdirSync(dirname(this.#path), { recursive: true });
     const tmp = `${this.#path}.tmp`;
     writeFileSync(tmp, JSON.stringify({ version: 1, profiles } satisfies StoreFile, null, 2), { mode: 0o600 });
@@ -121,7 +164,7 @@ export class ProfileStore {
     return this.#profiles.find((p) => p.id === id);
   }
 
-  update(id: string, patch: Partial<Pick<PocProfile, 'status' | 'statusReason' | 'lastImport' | 'sessionRestore'>>): PocProfile {
+  update(id: string, patch: ProfilePatch): PocProfile {
     const existing = this.get(id);
     if (!existing) throw new Error('unknown profile');
     const updated: PocProfile = { ...existing, ...patch, updatedAt: new Date().toISOString() };

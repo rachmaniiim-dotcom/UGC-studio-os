@@ -1,0 +1,5 @@
+#!/bin/sh
+# Blocks commits that stage secrets or session data (C5): scans the staged
+# content (not the working tree) and refuses sensitive file paths.
+# `git commit --no-verify` bypasses it; don't.
+exec node scripts/check-no-secrets.mjs --staged

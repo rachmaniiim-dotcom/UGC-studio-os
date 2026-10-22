@@ -12,11 +12,20 @@ interface ImportSummary {
   browserFailures: Record<string, number>;
 }
 
-interface SessionRestore {
-  at: string;
-  state: string;
-  count: number;
-  error: string | null;
+interface SessionSync {
+  revision: number;
+  savedCount: number;
+  savedAt: string | null;
+  saveError: string | null;
+  restore: { at: string; state: string; count: number; error: string | null } | null;
+}
+
+interface PlatformInfo {
+  id: string;
+  displayName: string;
+  statusCheck: 'manual' | 'probe';
+  automation: 'permitted' | 'not_permitted';
+  pages: string[];
 }
 
 interface Profile {
@@ -26,21 +35,25 @@ interface Profile {
   status: string;
   statusReason: string | null;
   lastImport: ImportSummary | null;
-  sessionRestore: SessionRestore | null;
+  platformId: string;
+  sessionSync: SessionSync;
 }
 
 type Result<T> = { ok: true; data: T } | { ok: false; error: { code: string } };
 
 interface UgcBridge {
+  getPlatform(): Promise<Result<PlatformInfo | null>>;
   listProfiles(): Promise<Result<Profile[]>>;
   importCookies(profileId: string): Promise<Result<{ canceled: boolean; profile: Profile }>>;
   checkStatus(profileId: string): Promise<Result<Profile>>;
+  confirmStatus(profileId: string, observation: 'logged_in' | 'logged_out'): Promise<Result<Profile>>;
   openSite(profileId: string, page: string): Promise<Result<{ opened: boolean }>>;
   clearProfile(profileId: string): Promise<Result<Profile>>;
 }
 
 const bridge = (window as unknown as { ugc: UgcBridge }).ugc;
 const container = document.getElementById('profiles') as HTMLElement;
+const platformLine = document.getElementById('platform') as HTMLElement;
 const errorBox = document.getElementById('error') as HTMLElement;
 
 function showError(code: string | null): void {
@@ -68,7 +81,24 @@ function describeImport(summary: ImportSummary): string {
   return [...lines, ...summary.messages].join('\n');
 }
 
-function render(profiles: Profile[]): void {
+const PAGE_LABELS: Record<string, string> = {
+  home: 'Open site',
+  strict: 'Open strict page',
+  'interactive-login': 'Interactive login (synthetic)',
+};
+
+function describeSync(sync: SessionSync): string {
+  const saved = sync.saveError
+    ? `not saved (${sync.saveError})`
+    : sync.savedCount > 0
+      ? `${sync.savedCount} saved, revision ${sync.revision}`
+      : `none saved, revision ${sync.revision}`;
+  const r = sync.restore;
+  const restore = r ? ` · last restore: ${r.state}, ${r.count}${r.error ? ` (${r.error})` : ''}` : '';
+  return `Session cookies: ${saved}${restore}`;
+}
+
+function render(platform: PlatformInfo, profiles: Profile[]): void {
   container.replaceChildren(
     ...profiles.map((profile) => {
       const card = el('section', undefined, 'profile');
@@ -78,12 +108,11 @@ function render(profiles: Profile[]): void {
       status.dataset['status'] = profile.status;
       card.append(status, el('p', `Partition: ${profile.partition}`, 'meta'));
       if (profile.lastImport) card.append(el('pre', describeImport(profile.lastImport)));
-      if (profile.sessionRestore) {
-        const r = profile.sessionRestore;
-        const line = el('p', `Session cookies: ${r.state}, ${r.count}${r.error ? ` (${r.error})` : ''} — ${r.at}`, 'meta restore');
-        line.dataset['restoreState'] = r.state;
-        card.append(line);
-      }
+      const sync = el('p', describeSync(profile.sessionSync), 'meta sync');
+      sync.dataset['revision'] = String(profile.sessionSync.revision);
+      sync.dataset['savedCount'] = String(profile.sessionSync.savedCount);
+      sync.dataset['restoreState'] = profile.sessionSync.restore?.state ?? 'none';
+      card.append(sync);
 
       const actions = el('div', undefined, 'actions');
       const button = (label: string, action: () => Promise<Result<unknown>>): void => {
@@ -94,10 +123,14 @@ function render(profiles: Profile[]): void {
         actions.append(b);
       };
       button('Import Cookie-Editor JSON…', () => bridge.importCookies(profile.id));
-      button('Check status', () => bridge.checkStatus(profile.id));
-      button('Open site', () => bridge.openSite(profile.id, 'home'));
-      button('Open strict page', () => bridge.openSite(profile.id, 'strict'));
-      button('Interactive login (synthetic)', () => bridge.openSite(profile.id, 'interactive-login'));
+      // Automated checks only where the platform permits them; otherwise the owner says what they see.
+      if (platform.statusCheck === 'probe') button('Check status', () => bridge.checkStatus(profile.id));
+      button('I see I am logged in', () => bridge.confirmStatus(profile.id, 'logged_in'));
+      button('I see I am logged out', () => bridge.confirmStatus(profile.id, 'logged_out'));
+      for (const page of platform.pages) {
+        if (page === 'rotate' || page === 'logout') continue; // synthetic test endpoints, driven by tests only
+        button(PAGE_LABELS[page] ?? `Open ${page}`, () => bridge.openSite(profile.id, page));
+      }
       button('Clear', () => bridge.clearProfile(profile.id));
       card.append(actions);
       return card;
@@ -106,10 +139,20 @@ function render(profiles: Profile[]): void {
 }
 
 async function refresh(): Promise<void> {
+  const platform = await bridge.getPlatform();
+  if (!platform.ok) return showError(platform.error.code);
+  if (!platform.data) {
+    platformLine.textContent = 'No platform configured.';
+    container.replaceChildren();
+    return;
+  }
+  const p = platform.data;
+  platformLine.textContent = `Platform: ${p.displayName} — status ${p.statusCheck === 'manual' ? 'confirmed by you (no automated checks)' : 'checked automatically'}`;
+  platformLine.dataset['statusCheck'] = p.statusCheck;
   const result = await bridge.listProfiles();
   if (!result.ok) return showError(result.error.code);
   showError(null);
-  render(result.data);
+  render(p, result.data);
 }
 
 void refresh();

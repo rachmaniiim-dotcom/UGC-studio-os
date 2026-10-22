@@ -1,6 +1,7 @@
 import { session, type Session } from 'electron';
-import { isDomainInScope, type Logger } from '@ugc/core';
-import { POC_PLATFORM, type RuntimeConfig } from './config.js';
+import { hostInDomains, type Logger, type PlatformDefinition } from '@ugc/core';
+import type { RuntimeConfig } from './config.js';
+import { SYNTHETIC_PLATFORM_ID } from './platforms.js';
 
 const hardened = new WeakSet<Session>();
 
@@ -9,7 +10,7 @@ const hardened = new WeakSet<Session>();
  * no downloads, and (synthetic mode only) trust for exactly one test
  * certificate on the synthetic hostnames.
  */
-export function hardenSession(ses: Session, config: RuntimeConfig, log: Logger): Session {
+export function hardenSession(ses: Session, config: RuntimeConfig, platform: PlatformDefinition | null, log: Logger): Session {
   if (hardened.has(ses)) return ses;
   hardened.add(ses);
 
@@ -24,26 +25,17 @@ export function hardenSession(ses: Session, config: RuntimeConfig, log: Logger):
   });
 
   const fingerprint = config.siteCertFingerprint;
-  if (config.synthetic && fingerprint) {
+  if (config.synthetic && fingerprint && platform?.id === SYNTHETIC_PLATFORM_ID) {
+    const domains = platform.navigationDomains;
     ses.setCertificateVerifyProc((request, callback) => {
       // 0 = trust, -3 = use Chromium's normal verification result.
-      const trusted =
-        isDomainInScope(request.hostname, POC_PLATFORM.allowedCookieDomains) && request.certificate.fingerprint === fingerprint;
+      const trusted = hostInDomains(request.hostname, domains) && request.certificate.fingerprint === fingerprint;
       callback(trusted ? 0 : -3);
     });
   }
   return ses;
 }
 
-export function profileSession(partition: string, config: RuntimeConfig, log: Logger): Session {
-  return hardenSession(session.fromPartition(partition), config, log);
-}
-
-export function isAllowedSiteUrl(raw: string): boolean {
-  try {
-    const url = new URL(raw);
-    return url.protocol === 'https:' && isDomainInScope(url.hostname, POC_PLATFORM.allowedCookieDomains);
-  } catch {
-    return false;
-  }
+export function profileSession(partition: string, config: RuntimeConfig, platform: PlatformDefinition | null, log: Logger): Session {
+  return hardenSession(session.fromPartition(partition), config, platform, log);
 }

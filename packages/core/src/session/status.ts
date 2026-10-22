@@ -3,6 +3,9 @@ export const SESSION_STATUSES = [
   'never_configured',
   'imported_unverified',
   'appears_authenticated',
+  // The owner looked at the site in the profile's window and confirmed they are logged in.
+  // Distinct from imported_unverified and from an automated appears_authenticated.
+  'confirmed_by_user',
   'expired',
   'rejected',
   'network_error',

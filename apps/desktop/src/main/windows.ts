@@ -1,6 +1,5 @@
 import { BrowserWindow, type WebContents } from 'electron';
-import type { Logger } from '@ugc/core';
-import { isAllowedSiteUrl } from './sessions.js';
+import { urlInDomains, type Logger } from '@ugc/core';
 
 function guardNavigation(contents: WebContents, isAllowed: (url: string) => boolean, log: Logger): void {
   const block = (event: { preventDefault(): void }, url: string): void => {
@@ -40,9 +39,16 @@ export function createMainWindow(preloadPath: string, devTools: boolean, log: Lo
 
 /**
  * Untrusted third-party content: no preload, no Node, sandboxed, bound to
- * one profile's partition and confined to that platform's domains.
+ * one profile's partition and confined to that platform's navigation domains.
  */
-export function openSiteWindow(partition: string, title: string, url: string, devTools: boolean, log: Logger): BrowserWindow {
+export function openSiteWindow(
+  partition: string,
+  title: string,
+  url: string,
+  navigationDomains: readonly string[],
+  devTools: boolean,
+  log: Logger,
+): BrowserWindow {
   const win = new BrowserWindow({
     width: 1000,
     height: 700,
@@ -57,7 +63,7 @@ export function openSiteWindow(partition: string, title: string, url: string, de
       spellcheck: false,
     },
   });
-  guardNavigation(win.webContents, isAllowedSiteUrl, log);
+  guardNavigation(win.webContents, (target) => urlInDomains(target, navigationDomains), log);
   void win.loadURL(url);
   return win;
 }

@@ -28,6 +28,12 @@ export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
+/** Companion cookie set together with a rotated session token; must match it. */
+export const CSRF_COOKIE = 'poc_csrf';
+export function csrfFor(token: string): string {
+  return `csrf_${hashToken(token).slice(0, 32)}`;
+}
+
 function parseCookies(header: string | undefined): Map<string, string> {
   const cookies = new Map<string, string>();
   for (const part of (header ?? '').split(';')) {
@@ -58,6 +64,11 @@ fetch('/whoami-strict', { headers: { 'x-device-token': deviceToken } }).then(r =
   el.dataset.state = d.authenticated ? 'authenticated' : 'anonymous';
   el.textContent = d.authenticated ? 'Authenticated as ' + d.user : 'Not authenticated (' + d.reason + ')';
 });`;
+
+const MARK_SCRIPT = (state: string, text: string): string => `
+const el = document.getElementById('status');
+el.dataset.state = ${JSON.stringify(state)};
+el.textContent = ${JSON.stringify(text)};`;
 
 const LOGIN_SCRIPT = (deviceToken: string): string => `
 localStorage.setItem('poc_device_token', ${JSON.stringify(deviceToken)});
@@ -93,6 +104,7 @@ export async function startSyntheticSite(): Promise<SyntheticSite> {
 
   const users = new Map<string, string>();
   const deviceTokens = new Map<string, string>();
+  let rotations = 0;
   const requests: RecordedRequest[] = [];
 
   const json = (res: ServerResponse, status: number, body: unknown): void => {
@@ -120,9 +132,35 @@ export async function startSyntheticSite(): Promise<SyntheticSite> {
         return html(res, PAGE(HOME_SCRIPT));
       case '/strict':
         return html(res, PAGE(STRICT_SCRIPT));
-      case '/whoami':
+      case '/whoami': {
+        // A CSRF companion from another generation means a mixed (inconsistent) session state.
+        const csrf = cookies.get(CSRF_COOKIE);
+        if (user && csrf !== undefined && token && csrf !== csrfFor(token)) {
+          return json(res, 401, { authenticated: false, reason: 'inconsistent_session' });
+        }
         if (user) return json(res, 200, { authenticated: true, user });
         return json(res, 401, { authenticated: false, reason: token ? 'unknown_session' : 'no_session' });
+      }
+      case '/rotate': {
+        // Replaces the session token (the old one stops working) and sets a matching
+        // CSRF cookie in the same response. Both are session cookies (no expiry).
+        if (!user || !token) return html(res, PAGE(MARK_SCRIPT('anonymous', 'Not authenticated')));
+        rotations += 1;
+        const next = syntheticToken(`${user}_r${rotations}`);
+        users.delete(token);
+        users.set(next, user);
+        return html(res, PAGE(MARK_SCRIPT('rotated', `Rotated for ${user}`)), {
+          'set-cookie': [
+            `${SESSION_COOKIE}=${next}; Path=/; Secure; HttpOnly; SameSite=Lax`,
+            `${CSRF_COOKIE}=${csrfFor(next)}; Path=/; Secure; SameSite=Lax`,
+          ],
+        });
+      }
+      case '/logout':
+        if (token) users.delete(token);
+        return html(res, PAGE(MARK_SCRIPT('logged-out', 'Logged out')), {
+          'set-cookie': [`${SESSION_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`, `${CSRF_COOKIE}=; Path=/; Secure; SameSite=Lax; Max-Age=0`],
+        });
       case '/whoami-strict': {
         if (!user) return json(res, 401, { authenticated: false, reason: token ? 'unknown_session' : 'no_session' });
         const device = req.headers['x-device-token'];

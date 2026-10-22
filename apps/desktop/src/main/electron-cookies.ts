@@ -1,5 +1,5 @@
-import type { CookiesSetDetails, Session } from 'electron';
-import type { NormalizedCookie, SameSite } from '@ugc/core';
+import type { Cookie, CookiesSetDetails, Session } from 'electron';
+import { SecretValue, type NormalizedCookie, type SameSite } from '@ugc/core';
 
 export type BrowserLoadIssue = 'unsupported_partitioned' | 'rejected_by_browser';
 
@@ -9,6 +9,34 @@ const SAME_SITE: Record<SameSite, NonNullable<CookiesSetDetails['sameSite']>> = 
   none: 'no_restriction',
   unspecified: 'unspecified',
 };
+
+const SAME_SITE_IN: Record<Cookie['sameSite'], SameSite> = {
+  strict: 'strict',
+  lax: 'lax',
+  no_restriction: 'none',
+  unspecified: 'unspecified',
+};
+
+/**
+ * Converts a cookie read from Electron's jar into a normalized session
+ * cookie, or null if it has an expiry (Chromium persists those itself).
+ * The value is wrapped in SecretValue at once.
+ */
+export function fromElectronSessionCookie(c: Cookie): NormalizedCookie | null {
+  if (!c.session || c.expirationDate !== undefined || !c.domain) return null;
+  const hostOnly = c.hostOnly ?? !c.domain.startsWith('.');
+  return {
+    name: c.name,
+    value: new SecretValue(c.value),
+    domain: c.domain.replace(/^\./, '').toLowerCase(),
+    hostOnly,
+    path: c.path ?? '/',
+    secure: c.secure ?? false,
+    httpOnly: c.httpOnly ?? false,
+    sameSite: SAME_SITE_IN[c.sameSite],
+    expiresAt: null,
+  };
+}
 
 /**
  * Converts a normalized cookie into Electron's cookies.set() details.

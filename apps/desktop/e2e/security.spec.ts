@@ -52,7 +52,7 @@ test('the app UI gets only a frozen, narrow bridge and its CSP blocks injected s
       process: 'undefined',
       ipcRenderer: 'undefined',
       frozen: true,
-      methods: ['checkStatus', 'clearProfile', 'importCookies', 'listProfiles', 'openSite'],
+      methods: ['checkStatus', 'clearProfile', 'confirmStatus', 'getPlatform', 'importCookies', 'listProfiles', 'openSite'],
       injected: null,
     });
   } finally {
