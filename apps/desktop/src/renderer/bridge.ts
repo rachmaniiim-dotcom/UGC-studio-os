@@ -155,8 +155,102 @@ export interface GenerationJob {
   videoFile: string | null;
   videoBytes: number | null;
   videoSha256: string | null;
+  promptItemId: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type VariableKind = 'text' | 'consistency' | 'choice' | 'pool';
+
+export interface TemplateVariable {
+  key: string;
+  label: string;
+  kind: VariableKind;
+  required: boolean;
+  default: string;
+  options: string[];
+  help: string;
+}
+
+export interface PromptTemplate {
+  key: string;
+  version: number;
+  name: string;
+  family: 'asmr' | 'grandma' | 'dance' | 'custom';
+  niche: string;
+  description: string;
+  builtin: boolean;
+  sections: Array<{ key: string; title: string; text: string }>;
+  variables: TemplateVariable[];
+  slots: Array<{ key: string; label: string; options: string[] }>;
+  references: { requirement: 'none' | 'optional' | 'required'; kinds: Array<'image' | 'video'>; purpose: 'appearance' | 'motion' | 'style'; flowSupport: 'manual_upload' | 'unsupported'; instructions: string };
+  video: VideoSettings;
+  caption: { pattern: string; hashtags: string[]; maxLength: number };
+}
+
+export interface TemplateConfig {
+  values: Record<string, string>;
+  pools: Record<string, string[]>;
+  count: number;
+  video: VideoSettings;
+  hashtags: string[];
+  referenceAssetIds: string[];
+}
+
+export type PromptStatus = 'draft' | 'approved' | 'rejected' | 'queued' | 'generating' | 'video_ready';
+export type PromptActionName = 'approve' | 'reject' | 'reopen' | 'queue' | 'unqueue' | 'start_manual' | 'back_to_queue';
+
+export interface PromptItem {
+  id: string;
+  batchId: string;
+  position: number;
+  status: PromptStatus;
+  axes: Record<string, string>;
+  content: { sections: Array<{ key: string; title: string; text: string }>; caption: string };
+  rendered: string;
+  edited: boolean;
+  flags: string[];
+  duplicates: number[];
+  manualSteps: string[];
+  references: Array<{ id: string; name: string; kind: 'image' | 'video'; available: boolean }>;
+  handoff: 'provider' | 'manual' | null;
+  jobId: string | null;
+  lastError: string | null;
+  video: { jobId: string; file: string } | null;
+  updatedAt: string;
+}
+
+export interface PromptBatch {
+  id: string;
+  templateKey: string;
+  templateVersion: number;
+  templateName: string;
+  providerId: string;
+  requested: number;
+  shortfall: string | null;
+  createdAt: string;
+  items: PromptItem[];
+}
+
+export interface ReferenceAsset {
+  id: string;
+  name: string;
+  kind: 'image' | 'video';
+  bytes: number;
+  file: string;
+  createdAt: string;
+}
+
+export interface StudioView {
+  templates: Array<{ template: PromptTemplate; versions: number }>;
+  configs: Record<string, { config: TemplateConfig; saved: boolean }>;
+  batches: PromptBatch[];
+  counts: Record<PromptStatus, number>;
+  references: ReferenceAsset[];
+  presets: Array<{ id: string; kind: 'character' | 'world' | 'style'; name: string; text: string }>;
+  conceptProvider: { id: string; displayName: string; kind: string; remote: boolean };
+  videoProvider: { available: boolean; label: string | null; reason: string | null };
+  unlinkedVideos: Array<{ jobId: string; source: string; createdAt: string; bytes: number | null }>;
 }
 
 export interface Account {
@@ -205,6 +299,22 @@ interface UgcBridge {
   removeReference(bundleId: string, referenceId: string): Promise<Result<GrowthView>>;
   importReferencesCsvText(bundleId: string, text: string): Promise<Result<{ result: ImportResult; view: GrowthView }>>;
   importReferencesCsvFile(bundleId: string): Promise<Result<{ canceled: boolean; result?: ImportResult; view?: GrowthView }>>;
+  studioView(bundleId: string): Promise<Result<StudioView>>;
+  saveTemplate(bundleId: string, template: Partial<PromptTemplate>, baseKey: string | null): Promise<Result<{ key: string; view: StudioView }>>;
+  duplicateTemplate(bundleId: string, templateKey: string): Promise<Result<{ key: string; view: StudioView }>>;
+  saveTemplateConfig(bundleId: string, templateKey: string, config: TemplateConfig): Promise<Result<StudioView>>;
+  generatePrompts(bundleId: string, templateKey: string): Promise<Result<{ batchId: string; view: StudioView }>>;
+  updatePrompt(bundleId: string, itemId: string, content: PromptItem['content']): Promise<Result<StudioView>>;
+  promptAction(bundleId: string, itemId: string, action: PromptActionName): Promise<Result<StudioView>>;
+  regeneratePrompt(bundleId: string, itemId: string): Promise<Result<StudioView>>;
+  copyPrompt(bundleId: string, itemId: string): Promise<Result<{ copied: boolean }>>;
+  generateVideoFromPrompt(bundleId: string, itemId: string): Promise<Result<StudioView>>;
+  linkPromptVideo(bundleId: string, itemId: string, jobId: string): Promise<Result<StudioView>>;
+  addReferenceAsset(bundleId: string, rightsConfirmed: boolean): Promise<Result<{ canceled: boolean; assetId?: string; view?: StudioView }>>;
+  removeReferenceAsset(bundleId: string, assetId: string): Promise<Result<StudioView>>;
+  revealReferenceAsset(bundleId: string, assetId: string): Promise<Result<{ shown: boolean }>>;
+  savePreset(bundleId: string, kind: string, name: string, text: string): Promise<Result<StudioView>>;
+  deletePreset(bundleId: string, presetId: string): Promise<Result<StudioView>>;
   getPlatform(): Promise<Result<PlatformInfo | null>>;
   listProfiles(): Promise<Result<Session[]>>;
   importCookies(profileId: string): Promise<Result<{ canceled: boolean; profile: Session }>>;
@@ -280,6 +390,21 @@ const MESSAGES: Record<string, [message: string, recovery: string]> = {
   unknown_reference: ['That reference no longer exists.', 'Refresh the screen.'],
   invalid_csv: ['The CSV couldn’t be read.', 'Check it has a header row with at least a "url" column (see the template).'],
   source_not_authorized: ['This research source isn’t authorized for automated retrieval.', 'Only sources with a recorded authorization can run.'],
+  unknown_template: ['That template no longer exists.', 'Choose another template.'],
+  invalid_template: ['The template can’t be saved.', 'Fix the problems listed below.'],
+  builtin_read_only: ['Starter templates can’t be changed.', 'Press Duplicate to make your own editable copy.'],
+  invalid_template_config: ['Some settings are invalid.', 'Fix the problems listed below.'],
+  unknown_prompt: ['That prompt no longer exists.', 'Refresh the screen.'],
+  invalid_prompt_edit: ['The edited prompt can’t be saved.', 'Every section needs text (max 4,000 characters each).'],
+  prompt_action_not_allowed: ['That step isn’t possible for this prompt’s current status.', 'Refresh and check its status.'],
+  prompt_blocked: ['This prompt can’t be approved yet.', 'Edit it to fix the problems listed below.'],
+  concept_provider_failed: ['The prompt generator didn’t return usable prompts.', 'Try again; nothing was saved.'],
+  unsafe_payload: ['The request would have included account details, so it wasn’t sent.', 'Remove account names or proxy details from the template settings.'],
+  unknown_reference_asset: ['That reference file no longer exists.', 'Refresh the screen.'],
+  invalid_reference_file: ['That file can’t be used as a reference.', 'Use a JPG, PNG, WEBP, MP4 or MOV file under 200 MB.'],
+  rights_not_confirmed: ['Confirm that you own the file or have rights to use it.', 'Tick the confirmation box first.'],
+  invalid_preset: ['The preset can’t be saved.', 'Give it a name and a description (max 2,000 characters).'],
+  unknown_video: ['That video can’t be linked.', 'Choose a finished video of this account that isn’t linked to another prompt.'],
   untrusted_sender: ['The request was refused.', 'Restart the app.'],
   internal_error: ['Something went wrong.', 'Try again; if it repeats, restart the app.'],
 };
@@ -326,6 +451,37 @@ const FIELD_MESSAGES: Record<string, string> = {
   malformed: 'The CSV has an unclosed quote.',
   too_large: 'The file is larger than 2 MB.',
   invalid_mode: 'Choose a production mode.',
+  invalid_template_key: 'The template id is invalid.',
+  invalid_template_name: 'Give the template a name (max 80 characters).',
+  invalid_template_text: 'Niche is required; the description can be up to 500 characters.',
+  invalid_sections: 'Add at least one section; each needs a key, a title and text (max 4,000 characters).',
+  invalid_variables: 'Each variable needs a key (lowercase letters, digits, _), a label and a kind.',
+  duplicate_key: 'Two sections, variables or slots use the same key.',
+  invalid_options: 'Lists need at least one option, and a choice’s default must be one of its options.',
+  unknown_placeholder: 'A {{placeholder}} in the text or caption doesn’t match any variable or slot.',
+  no_variation: 'Add at least one varying list (kind "pool") so prompts can differ.',
+  invalid_reference_spec: 'The reference settings are incomplete.',
+  invalid_caption: 'Caption: a pattern, hashtags starting with # and a max length of 20–2,200.',
+  invalid_video: 'Video settings are invalid.',
+  missing_required_value: 'A required field is empty.',
+  value_too_long: 'A value is too long.',
+  invalid_choice: 'Pick one of the listed options.',
+  pool_empty: 'Every varying list needs at least one option.',
+  invalid_count: 'Number of prompts must be 1–20.',
+  invalid_hashtags: 'Hashtags start with # and contain no spaces.',
+  invalid_reference_assets: 'One of the selected reference files no longer exists.',
+  reference_kind_not_allowed: 'This template doesn’t take that kind of reference file.',
+  unresolved_placeholder: 'A {{placeholder}} is left in the text.',
+  too_long: 'The prompt is longer than 4,000 characters.',
+  consistency_missing: 'The character, world or style description was changed or removed; it must appear exactly as configured.',
+  reference_missing: 'This template needs a reference file.',
+  unsupported_type: 'Use a JPG, PNG, WEBP, MP4 or MOV file.',
+  unreadable: 'The file couldn’t be read.',
+  content_mismatch: 'The file’s content doesn’t match its extension.',
+  reference_too_large: 'Reference files can be up to 200 MB.',
+  invalid_output: 'The generator returned malformed prompts.',
+  unavailable: 'The generator is unavailable.',
+  refused: 'The generator refused the request.',
 };
 
 export function describeError(code: string): { message: string; recovery: string } {

@@ -2,13 +2,14 @@ import { app, session, type BrowserWindow } from 'electron';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createLogger, type PlatformDefinition } from '@ugc/core';
+import { createLogger, TemplateProvider, type PlatformDefinition } from '@ugc/core';
 import { registerAppScheme, serveAppProtocol } from './app-protocol.js';
 import { readRuntimeConfig } from './config.js';
 import { attachFlowDownloads } from './downloads.js';
 import { GenerationService } from './generation.js';
 import { GenerationStore } from './generation-store.js';
 import { GrowthService } from './growth.js';
+import { PromptStudioService } from './prompt-studio.js';
 import { registerIpc } from './ipc.js';
 import { VideoLibrary } from './library.js';
 import { SyntheticVideoProvider } from './synthetic-provider.js';
@@ -110,12 +111,34 @@ if (securityCheck) {
       ensureNetworkReady: async () => {
         throw new Error('no network provider configured');
       },
+      onJobEnded: (job) => studio.jobEnded(job),
+    });
+    // Prompt Studio (T1): deterministic template engine, no AI service and no network.
+    const studio: PromptStudioService = new PromptStudioService({
+      meta,
+      bundles,
+      jobs,
+      generation,
+      provider: new TemplateProvider(),
+      log,
+      userData,
+      sensitiveValues: () => bundles.list().flatMap((b) => [b.id, b.displayName, b.proxy?.host ?? '', b.proxy?.observedIp ?? '']),
     });
     generation.reconcile();
+    studio.reconcile();
     // The one download exception: videos the owner downloads in a bundle's Google Flow window.
     const attachDownloads = (p: PocProfile): void => {
       const platform = platformOf(p);
-      if (platform) attachFlowDownloads(p, platform, sessionOf(p), { library, jobs, log, synthetic: config.synthetic });
+      if (platform) {
+        attachFlowDownloads(p, platform, sessionOf(p), {
+          library,
+          jobs,
+          log,
+          synthetic: config.synthetic,
+          claimPrompt: (bundleId) => studio.claimManualPrompt(bundleId),
+          onEnded: (job) => studio.jobEnded(job),
+        });
+      }
     };
     for (const p of sessions.list()) attachDownloads(p);
 
@@ -135,6 +158,7 @@ if (securityCheck) {
       library,
       onSessionCreated: attachDownloads,
       growth: new GrowthService(meta, bundles, log),
+      studio,
     });
     mainWindow = createMainWindow(join(here, '..', 'preload', 'preload.cjs'), config.synthetic, log);
     mainWindow.on('closed', () => (mainWindow = null));

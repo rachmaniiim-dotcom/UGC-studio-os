@@ -1,4 +1,4 @@
-import { needsUser, type GenerationErrorCode, type Logger, type VideoGenerationProvider } from '@ugc/core';
+import { needsUser, type GenerationErrorCode, type Logger, type VideoGenerationProvider, type VideoSettings } from '@ugc/core';
 import type { GenerationJob, GenerationStore } from './generation-store.js';
 import type { VideoLibrary } from './library.js';
 import type { BundleStore } from './profiles.js';
@@ -32,6 +32,15 @@ export interface GenerationServiceDeps {
   readonly timeoutMs: number;
   /** Must not resolve until the bundle may reach the network (proxy passed). Browser/API providers only. */
   readonly ensureNetworkReady: (bundleId: string) => Promise<void>;
+  /** Called once when a job reaches a final state (e.g. to update its source prompt). */
+  readonly onJobEnded?: (job: GenerationJob) => void;
+}
+
+/** A job started from an approved, queued Prompt Studio item instead of the saved creative settings. */
+export interface PromptSource {
+  readonly promptItemId: string;
+  readonly prompt: string;
+  readonly settings: VideoSettings;
 }
 
 export class GenerationService {
@@ -65,17 +74,17 @@ export class GenerationService {
   }
 
   /** Starts one job and returns it at once; it runs in the background. */
-  start(bundleId: string): GenerationJob {
+  start(bundleId: string, source?: PromptSource): GenerationJob {
     const { bundles, jobs, provider, dailyCap } = this.#deps;
     const bundle = bundles.get(bundleId);
     if (!bundle || bundle.mode !== 'account_growth') throw new GenerationError('not_growth_account');
-    const creative = jobs.getCreative(bundleId);
+    const creative = source ? { prompt: source.prompt, settings: source.settings } : jobs.getCreative(bundleId);
     if (!creative) throw new GenerationError('no_creative_settings');
     if (!provider) throw new GenerationError('no_provider');
     if (jobs.list(bundleId, 50).some((j) => j.state === 'pending' || j.state === 'running')) throw new GenerationError('job_in_progress');
     if (jobs.countToday(bundleId) >= dailyCap) throw new GenerationError('daily_cap_reached');
 
-    const job = jobs.create({ bundleId, source: 'provider', providerId: provider.id, settings: creative.settings });
+    const job = jobs.create({ bundleId, source: 'provider', providerId: provider.id, settings: creative.settings, promptItemId: source?.promptItemId ?? null });
     this.#deps.log.info('generation_job_created', { jobId: job.id, bundleId, provider: provider.id });
     const run = this.#run(job, provider, creative.prompt).finally(() => this.#running.delete(job.id));
     this.#running.set(job.id, run);
@@ -92,6 +101,7 @@ export class GenerationService {
     const end = (to: 'completed' | 'waiting_for_user' | 'failed', patch: Parameters<GenerationStore['transition']>[2] = {}): void => {
       const done = jobs.transition(job.id, to, patch);
       log.info('generation_job_state', { jobId: job.id, bundleId: job.bundleId, state: done.state, error: done.errorCode, needsUser: done.needsUser });
+      this.#ended(done);
     };
     const fail = (error: GenerationErrorCode): void =>
       needsUser(error) ? end('waiting_for_user', { errorCode: error, needsUser: true }) : end('failed', { errorCode: error });
@@ -128,8 +138,16 @@ export class GenerationService {
       log.error('generation_job_error', { jobId: job.id, err });
       const current = jobs.get(job.id);
       if (current && (current.state === 'pending' || current.state === 'running')) {
-        jobs.transition(job.id, 'failed', { errorCode: 'transient', code: 'internal_error' });
+        this.#ended(jobs.transition(job.id, 'failed', { errorCode: 'transient', code: 'internal_error' }));
       }
+    }
+  }
+
+  #ended(job: GenerationJob): void {
+    try {
+      this.#deps.onJobEnded?.(job);
+    } catch (err) {
+      this.#deps.log.error('generation_job_hook_error', { jobId: job.id, err });
     }
   }
 }

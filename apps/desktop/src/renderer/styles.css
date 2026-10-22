@@ -129,3 +129,30 @@ table.refs td { padding: 8px 6px; border-bottom: 1px solid var(--border); vertic
 .edit-metrics { display: grid; grid-template-columns: repeat(2, 90px); gap: 4px; }
 label.tiny { font-size: 0.72rem; }
 
+.template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.template-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px; display: grid; gap: 4px; }
+.template-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.template-head { display: flex; justify-content: space-between; gap: 6px; align-items: center; }
+.config-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 10px; }
+.config-grid .wide, .consistency { grid-column: span 2; }
+.config-grid label, .prompt-edit label, .consistency label { display: grid; gap: 4px; }
+.preset-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+.production-grid { grid-template-columns: 140px 140px 120px 2fr; }
+.ref-list { list-style: none; padding: 0; margin: 6px 0; display: grid; gap: 4px; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; }
+.filters .spacer { flex: 1; }
+.batch { margin-top: 12px; }
+.batch-head { margin-bottom: 6px; }
+.prompt-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.prompt-card.status-rejected { opacity: 0.7; }
+.prompt-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+.axes .axis { background: var(--chip-bg); border-radius: 6px; padding: 1px 6px; font-size: 0.75rem; }
+.prompt-text { white-space: pre-wrap; font-family: inherit; font-size: 0.85rem; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; max-height: 260px; overflow: auto; margin: 6px 0; }
+.prompt-edit { display: grid; gap: 6px; }
+.manual-steps { margin: 6px 0; padding-left: 18px; color: var(--warn); }
+.bad-text { color: var(--bad); }
+.warn-text { color: var(--warn); }
+.template-editor .editor-row { display: grid; grid-template-columns: 120px 180px 1fr auto; gap: 6px; align-items: start; margin-bottom: 6px; }
+.template-editor .editor-row:has(select) { grid-template-columns: 120px 160px 120px 1fr auto auto; }
+.template-editor .key { font-family: Consolas, 'Cascadia Mono', monospace; }
+.editor-grid { grid-template-columns: repeat(4, 1fr); }

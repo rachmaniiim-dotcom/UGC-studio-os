@@ -1,4 +1,4 @@
-import { dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { clipboard, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import { readFile, stat } from 'node:fs/promises';
 import {
   BUNDLE_PLATFORMS,
@@ -6,6 +6,7 @@ import {
   bundleStatus,
   importCookieEditorExport,
   oversizedFileResult,
+  PROMPT_ACTIONS,
   validateAccountInput,
   validateCreativeInput,
   type BundleStatus,
@@ -13,12 +14,14 @@ import {
   type ImportReport,
   type Logger,
   type PlatformDefinition,
+  type PromptAction,
 } from '@ugc/core';
 import type { RuntimeConfig } from './config.js';
 import { replaceCookies, type LoadResult } from './electron-cookies.js';
 import { cookieEncryptionFuseEnabled } from './fuses.js';
 import { GenerationError, type GenerationService } from './generation.js';
 import { GrowthError, type GrowthService } from './growth.js';
+import { StudioError, type PromptStudioService } from './prompt-studio.js';
 import type { GenerationJob, GenerationStore } from './generation-store.js';
 import type { VideoLibrary } from './library.js';
 import { SYNTHETIC_PLATFORM_ID } from './platforms.js';
@@ -58,6 +61,21 @@ export type IpcErrorCode =
   | 'unknown_reference'
   | 'invalid_csv'
   | 'source_not_authorized'
+  | 'unknown_template'
+  | 'invalid_template'
+  | 'builtin_read_only'
+  | 'invalid_template_config'
+  | 'unknown_prompt'
+  | 'invalid_prompt_edit'
+  | 'prompt_action_not_allowed'
+  | 'prompt_blocked'
+  | 'concept_provider_failed'
+  | 'unsafe_payload'
+  | 'unknown_reference_asset'
+  | 'invalid_reference_file'
+  | 'rights_not_confirmed'
+  | 'invalid_preset'
+  | 'unknown_video'
   | 'internal_error';
 
 /** `details` carries sanitized issue codes (e.g. which field is invalid), never input values. */
@@ -89,6 +107,7 @@ export interface IpcDeps {
   /** Called for each newly created bundle session (e.g. to attach the Flow download policy). */
   readonly onSessionCreated: (profile: PocProfile) => void;
   readonly growth: GrowthService;
+  readonly studio: PromptStudioService;
 }
 
 /** What the UI may know about a platform. */
@@ -164,6 +183,9 @@ export interface ImportOutcome {
   readonly profile: PocProfile;
 }
 
+const TEMPLATE_KEY = /^(builtin|custom)-[a-z0-9-]{1,40}$/;
+const PROMPT_ACTION_NAMES: readonly string[] = Object.keys(PROMPT_ACTIONS);
+
 export function registerIpc({
   config,
   sessions,
@@ -179,6 +201,7 @@ export function registerIpc({
   library,
   onSessionCreated,
   growth,
+  studio,
 }: IpcDeps): void {
   const devTools = config.synthetic;
   const platformOf = (profile: PocProfile): PlatformDefinition | undefined => platforms.get(profile.platformId);
@@ -251,6 +274,35 @@ export function registerIpc({
       if (err instanceof ProxyError) throw new IpcError(err.code as IpcErrorCode, err.details);
       throw err;
     }
+  };
+
+  const studioError = (err: unknown): never => {
+    if (err instanceof StudioError) throw new IpcError(err.code, err.details);
+    throw err;
+  };
+  const studioCall = <T>(run: () => T): T => {
+    try {
+      return run();
+    } catch (err) {
+      return studioError(err);
+    }
+  };
+  const studioCallAsync = async <T>(run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (err) {
+      return studioError(err);
+    }
+  };
+  const requireId = (request: Record<string, unknown>, field: string): string => {
+    const id = request[field];
+    if (typeof id !== 'string' || !PROFILE_ID.test(id)) throw new IpcError('invalid_request');
+    return id;
+  };
+  const requireTemplateKey = (request: Record<string, unknown>): string => {
+    const key = request['templateKey'];
+    if (typeof key !== 'string' || !TEMPLATE_KEY.test(key)) throw new IpcError('invalid_request');
+    return key;
   };
 
   const growthCall = <T>(run: () => T): T => {
@@ -493,6 +545,179 @@ export function registerIpc({
         throw new IpcError('file_unreadable');
       }
       return growthCall(() => ({ canceled: false, result: growth.importCsv(bundle.id, text), view: growth.view(bundle.id) }));
+    },
+
+    // ---- Prompt Studio (T1, Ternak Akun): templates → configuration → prompt batches → queue ----
+
+    'studio:view': async (payload) => studioCall(() => studio.view(requireBundle(requireObject(payload, ['bundleId'])).id)),
+
+    'studio:save-template': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'template', 'baseKey']);
+      const bundle = requireBundle(request);
+      const baseKey = request['baseKey'];
+      if (baseKey !== null && (typeof baseKey !== 'string' || !TEMPLATE_KEY.test(baseKey))) throw new IpcError('invalid_request');
+      return studioCall(() => {
+        const saved = studio.saveTemplate(request['template'], baseKey as string | null);
+        return { key: saved.key, view: studio.view(bundle.id) };
+      });
+    },
+
+    'studio:duplicate-template': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'templateKey']);
+      const bundle = requireBundle(request);
+      const key = requireTemplateKey(request);
+      return studioCall(() => {
+        const copy = studio.duplicateTemplate(key);
+        return { key: copy.key, view: studio.view(bundle.id) };
+      });
+    },
+
+    'studio:save-config': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'templateKey', 'config']);
+      const bundle = requireBundle(request);
+      const key = requireTemplateKey(request);
+      return studioCall(() => {
+        studio.saveConfig(bundle.id, key, request['config']);
+        return studio.view(bundle.id);
+      });
+    },
+
+    'studio:generate': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'templateKey']);
+      const bundle = requireBundle(request);
+      const key = requireTemplateKey(request);
+      return studioCallAsync(async () => {
+        const batch = await studio.generate(bundle.id, key);
+        return { batchId: batch.id, view: studio.view(bundle.id) };
+      });
+    },
+
+    'studio:update-prompt': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'itemId', 'content']);
+      const bundle = requireBundle(request);
+      const itemId = requireId(request, 'itemId');
+      return studioCall(() => {
+        studio.updateItem(bundle.id, itemId, request['content']);
+        return studio.view(bundle.id);
+      });
+    },
+
+    'studio:prompt-action': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'itemId', 'action']);
+      const bundle = requireBundle(request);
+      const itemId = requireId(request, 'itemId');
+      const action = request['action'];
+      if (typeof action !== 'string' || !PROMPT_ACTION_NAMES.includes(action)) throw new IpcError('invalid_request');
+      return studioCall(() => {
+        studio.act(bundle.id, itemId, action as PromptAction);
+        return studio.view(bundle.id);
+      });
+    },
+
+    'studio:regenerate-prompt': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'itemId']);
+      const bundle = requireBundle(request);
+      const itemId = requireId(request, 'itemId');
+      return studioCallAsync(async () => {
+        await studio.regenerate(bundle.id, itemId);
+        return studio.view(bundle.id);
+      });
+    },
+
+    // Copies the prompt for pasting into Google Flow by hand. The app never types into Flow.
+    'studio:copy-prompt': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'itemId']);
+      const bundle = requireBundle(request);
+      const itemId = requireId(request, 'itemId');
+      return studioCall(() => {
+        clipboard.writeText(studio.copyText(bundle.id, itemId));
+        return { copied: true };
+      });
+    },
+
+    'studio:generate-video': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'itemId']);
+      const bundle = requireBundle(request);
+      const itemId = requireId(request, 'itemId');
+      return studioCall(() => {
+        try {
+          studio.generateVideo(bundle.id, itemId);
+        } catch (err) {
+          if (err instanceof GenerationError) throw new IpcError(err.code);
+          throw err;
+        }
+        return studio.view(bundle.id);
+      });
+    },
+
+    'studio:link-video': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'itemId', 'jobId']);
+      const bundle = requireBundle(request);
+      const itemId = requireId(request, 'itemId');
+      const jobId = requireId(request, 'jobId');
+      return studioCall(() => {
+        studio.linkVideo(bundle.id, itemId, jobId);
+        return studio.view(bundle.id);
+      });
+    },
+
+    // The main process picks the file; the owner must have confirmed they own it or have rights to it.
+    'studio:add-reference': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'rightsConfirmed']);
+      const bundle = requireBundle(request);
+      if (request['rightsConfirmed'] !== true) throw new IpcError('rights_not_confirmed');
+      const win = mainWindow();
+      const options = {
+        title: 'Add a reference file you own or have rights to',
+        properties: ['openFile' as const],
+        filters: [{ name: 'Images and videos', extensions: ['jpg', 'jpeg', 'png', 'webp', 'mp4', 'mov'] }],
+      };
+      const pick = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const file = pick.filePaths[0];
+      if (pick.canceled || !file) return { canceled: true };
+      return studioCallAsync(async () => {
+        const asset = await studio.addReference(bundle.id, file, true);
+        return { canceled: false, assetId: asset.id, view: studio.view(bundle.id) };
+      });
+    },
+
+    'studio:remove-reference': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'assetId']);
+      const bundle = requireBundle(request);
+      const assetId = requireId(request, 'assetId');
+      return studioCallAsync(async () => {
+        await studio.removeReference(bundle.id, assetId);
+        return studio.view(bundle.id);
+      });
+    },
+
+    'studio:reveal-reference': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'assetId']);
+      const bundle = requireBundle(request);
+      const assetId = requireId(request, 'assetId');
+      return studioCall(() => {
+        shell.showItemInFolder(studio.referencePath(bundle.id, assetId));
+        return { shown: true };
+      });
+    },
+
+    'studio:save-preset': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'kind', 'name', 'text']);
+      const bundle = requireBundle(request);
+      return studioCall(() => {
+        studio.savePreset(request['kind'], request['name'], request['text']);
+        return studio.view(bundle.id);
+      });
+    },
+
+    'studio:delete-preset': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'presetId']);
+      const bundle = requireBundle(request);
+      const presetId = requireId(request, 'presetId');
+      return studioCall(() => {
+        studio.deletePreset(presetId);
+        return studio.view(bundle.id);
+      });
     },
 
     // ---- Platform sessions (shared by bundle sessions and the earlier gates' test profiles) ----

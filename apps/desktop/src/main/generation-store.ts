@@ -18,6 +18,8 @@ export interface GenerationJob {
   readonly videoFile: string | null;
   readonly videoBytes: number | null;
   readonly videoSha256: string | null;
+  /** The Prompt Studio item this video was made from, if known (T1). */
+  readonly promptItemId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -42,6 +44,7 @@ interface JobRow {
   video_file: string | null;
   video_bytes: number | null;
   video_sha256: string | null;
+  prompt_item_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -59,6 +62,7 @@ const toJob = (r: JobRow): GenerationJob => ({
   videoFile: r.video_file,
   videoBytes: r.video_bytes,
   videoSha256: r.video_sha256,
+  promptItemId: r.prompt_item_id ?? null,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
@@ -94,13 +98,13 @@ export class GenerationStore {
       .run(bundleId, creative.prompt, JSON.stringify(creative.settings), new Date().toISOString());
   }
 
-  create(input: { bundleId: string; source: GenerationJob['source']; providerId: string; settings: VideoSettings | null }): GenerationJob {
+  create(input: { bundleId: string; source: GenerationJob['source']; providerId: string; settings: VideoSettings | null; promptItemId?: string | null }): GenerationJob {
     const db = this.#require();
     const id = randomUUID();
     const now = new Date().toISOString();
     db.prepare(
-      'INSERT INTO generation_jobs (id, bundle_id, source, provider_id, state, settings_json, needs_user, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)',
-    ).run(id, input.bundleId, input.source, input.providerId, 'pending', input.settings ? JSON.stringify(input.settings) : null, now, now);
+      'INSERT INTO generation_jobs (id, bundle_id, source, provider_id, state, settings_json, needs_user, prompt_item_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)',
+    ).run(id, input.bundleId, input.source, input.providerId, 'pending', input.settings ? JSON.stringify(input.settings) : null, input.promptItemId ?? null, now, now);
     this.#event(id, null, 'pending', null);
     return this.get(id)!;
   }
@@ -165,6 +169,11 @@ export class GenerationStore {
     );
     this.#event(id, job.state, to, patch.code ?? patch.errorCode ?? null);
     return this.get(id)!;
+  }
+
+  /** Links a finished video to the prompt it was made from (owner's choice for manual downloads). */
+  linkPrompt(id: string, promptItemId: string): void {
+    this.#require().prepare('UPDATE generation_jobs SET prompt_item_id = ?, updated_at = ? WHERE id = ?').run(promptItemId, new Date().toISOString(), id);
   }
 
   setProgress(id: string, progress: number | null): void {

@@ -1,7 +1,7 @@
 import { ACCOUNT_STATUS, MODE_LABELS, SESSION_STATUS, type Account } from './bridge.js';
 import { Badge } from './Badge.js';
 
-export function Dashboard(props: { accounts: Account[]; onAdd: () => void; onEdit: (id: string) => void; onGrowth: (id: string) => void }): React.JSX.Element {
+export function Dashboard(props: { accounts: Account[]; onAdd: () => void; onEdit: (id: string) => void; onGrowth: (id: string) => void; onStudio: (id: string) => void }): React.JSX.Element {
   const { accounts } = props;
   const counts = {
     total: accounts.length,
@@ -84,9 +84,14 @@ export function Dashboard(props: { accounts: Account[]; onAdd: () => void; onEdi
                     Open
                   </button>
                   {a.mode === 'account_growth' && (
-                    <button type="button" onClick={() => props.onGrowth(a.id)}>
-                      Growth Intelligence
-                    </button>
+                    <>
+                      <button type="button" onClick={() => props.onStudio(a.id)}>
+                        Prompt Studio
+                      </button>
+                      <button type="button" title="Optional advanced research" onClick={() => props.onGrowth(a.id)}>
+                        Growth Intelligence
+                      </button>
+                    </>
                   )}
                 </td>
               </tr>

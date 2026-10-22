@@ -131,7 +131,10 @@ export function VideoSection(props: { account: Account; onChanged: () => Promise
             {jobs.map((j) => (
               <tr key={j.id} data-job-id={j.id} data-state={j.state} data-error={j.errorCode ?? ''}>
                 <td className="small">{new Date(j.createdAt).toLocaleString()}</td>
-                <td className="small">{j.source === 'manual_download' ? 'Downloaded from Flow' : j.providerId}</td>
+                <td className="small">
+                  {j.source === 'manual_download' ? 'Downloaded from Flow' : j.providerId}
+                  {j.promptItemId && <div className="muted" data-testid="from-prompt">from a Prompt Studio prompt</div>}
+                </td>
                 <td>
                   <Badge tone={STATE_LABEL[j.state].tone}>{STATE_LABEL[j.state].label}</Badge>
                   {j.state === 'running' && j.progress !== null && <span className="muted small"> {Math.round(j.progress * 100)}%</span>}

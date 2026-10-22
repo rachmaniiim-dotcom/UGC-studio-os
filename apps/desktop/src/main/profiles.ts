@@ -188,6 +188,77 @@ const MIGRATIONS: readonly string[] = [
      updated_at TEXT NOT NULL,
      UNIQUE (bundle_id, platform_video_id)
    );`,
+  // T1 (Ternak Akun): prompt templates (owner-made; starters ship in code), per-account template
+  // settings, reusable character/world presets, local reference files, and prompt batches whose
+  // items carry their own status (prompt approval is separate from video production).
+  `CREATE TABLE prompt_templates (
+     key TEXT NOT NULL,
+     version INTEGER NOT NULL,
+     definition_json TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     PRIMARY KEY (key, version)
+   );
+   CREATE TABLE creative_presets (
+     id TEXT PRIMARY KEY,
+     kind TEXT NOT NULL CHECK (kind IN ('character', 'world', 'style')),
+     name TEXT NOT NULL,
+     text TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     UNIQUE (kind, name)
+   );
+   CREATE TABLE reference_assets (
+     id TEXT PRIMARY KEY,
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     file TEXT NOT NULL,
+     name TEXT NOT NULL,
+     kind TEXT NOT NULL CHECK (kind IN ('image', 'video')),
+     bytes INTEGER NOT NULL,
+     sha256 TEXT NOT NULL,
+     rights_confirmed_at TEXT NOT NULL,
+     created_at TEXT NOT NULL
+   );
+   CREATE TABLE template_configs (
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     template_key TEXT NOT NULL,
+     config_json TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     PRIMARY KEY (bundle_id, template_key)
+   );
+   CREATE TABLE prompt_batches (
+     id TEXT PRIMARY KEY,
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     template_key TEXT NOT NULL,
+     template_version INTEGER NOT NULL,
+     template_json TEXT NOT NULL,
+     config_json TEXT NOT NULL,
+     assets_json TEXT NOT NULL,
+     provider_id TEXT NOT NULL,
+     seed TEXT NOT NULL,
+     requested INTEGER NOT NULL,
+     shortfall TEXT,
+     created_at TEXT NOT NULL
+   );
+   CREATE TABLE prompt_items (
+     id TEXT PRIMARY KEY,
+     batch_id TEXT NOT NULL REFERENCES prompt_batches(id),
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     position INTEGER NOT NULL,
+     axes_json TEXT NOT NULL,
+     slots_json TEXT NOT NULL,
+     content_json TEXT NOT NULL,
+     rendered TEXT NOT NULL,
+     status TEXT NOT NULL CHECK (status IN ('draft', 'approved', 'rejected', 'queued', 'generating', 'video_ready')),
+     edited INTEGER NOT NULL DEFAULT 0,
+     flags_json TEXT NOT NULL DEFAULT '[]',
+     duplicates_json TEXT NOT NULL DEFAULT '[]',
+     handoff TEXT CHECK (handoff IN ('provider', 'manual')),
+     job_id TEXT,
+     last_error TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     UNIQUE (batch_id, position)
+   );
+   ALTER TABLE generation_jobs ADD COLUMN prompt_item_id TEXT;`,
 ];
 
 export class MetadataDb {

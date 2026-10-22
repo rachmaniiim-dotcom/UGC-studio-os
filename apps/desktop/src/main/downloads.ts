@@ -1,5 +1,5 @@
 import { hostInDomains, type Logger, type PlatformDefinition } from '@ugc/core';
-import type { GenerationStore } from './generation-store.js';
+import type { GenerationJob, GenerationStore } from './generation-store.js';
 import { MAX_VIDEO_BYTES, type VideoLibrary } from './library.js';
 import type { PocProfile } from './profiles.js';
 import { setDownloadHandler } from './sessions.js';
@@ -31,7 +31,15 @@ export function attachFlowDownloads(
   profile: PocProfile,
   platform: PlatformDefinition,
   ses: Electron.Session,
-  deps: { library: VideoLibrary; jobs: GenerationStore; log: Logger; synthetic: boolean },
+  deps: {
+    library: VideoLibrary;
+    jobs: GenerationStore;
+    log: Logger;
+    synthetic: boolean;
+    /** The prompt the owner took to Flow by hand, if any: the download is linked to it (T1). */
+    claimPrompt?: (bundleId: string) => string | null;
+    onEnded?: (job: GenerationJob) => void;
+  },
 ): void {
   if (!profile.bundleId || platform.id !== 'google-flow') return;
   const bundleId = profile.bundleId;
@@ -42,7 +50,7 @@ export function attachFlowDownloads(
       deps.log.warn('download_rejected', { bundleId, reason: !isMp4 ? 'not_mp4' : item.getTotalBytes() > MAX_VIDEO_BYTES ? 'too_large' : 'source_not_allowed' });
       return false;
     }
-    const job = deps.jobs.create({ bundleId, source: 'manual_download', providerId: 'google-flow-manual', settings: null });
+    const job = deps.jobs.create({ bundleId, source: 'manual_download', providerId: 'google-flow-manual', settings: null, promptItemId: deps.claimPrompt?.(bundleId) ?? null });
     deps.jobs.transition(job.id, 'running', { code: 'download_started' });
     const part = deps.library.partPath(bundleId, job.id);
     item.setSavePath(part);
@@ -53,12 +61,18 @@ export function attachFlowDownloads(
       // An interrupted or cancelled download is deleted, never kept as a partial video.
       if (state !== 'completed') deps.library.discard(part);
       const stored = state === 'completed' ? deps.library.finalize(part) : null;
+      let ended: GenerationJob;
       if (stored) {
-        deps.jobs.transition(job.id, 'completed', { video: stored, code: 'manual_download' });
+        ended = deps.jobs.transition(job.id, 'completed', { video: stored, code: 'manual_download' });
         deps.log.info('manual_download_saved', { bundleId, jobId: job.id, bytes: stored.bytes });
       } else {
-        deps.jobs.transition(job.id, 'failed', { errorCode: state === 'completed' ? 'output_invalid' : 'cancelled' });
+        ended = deps.jobs.transition(job.id, 'failed', { errorCode: state === 'completed' ? 'output_invalid' : 'cancelled' });
         deps.log.warn('manual_download_failed', { bundleId, jobId: job.id, state });
+      }
+      try {
+        deps.onEnded?.(ended);
+      } catch (err) {
+        deps.log.error('manual_download_hook_error', { bundleId, jobId: job.id, err });
       }
     });
     deps.log.info('manual_download_started', { bundleId, jobId: job.id });
