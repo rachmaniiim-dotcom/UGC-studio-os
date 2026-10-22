@@ -16,6 +16,11 @@ contextBridge.exposeInMainWorld(
       ipcRenderer.invoke('accounts:set-proxy', { bundleId, proxy, keepCredentials }),
     testAccountProxy: (bundleId: string) => ipcRenderer.invoke('accounts:test-proxy', { bundleId }),
     importSessionText: (profileId: string, text: string) => ipcRenderer.invoke('accounts:import-text', { profileId, text }),
+    // Video generation
+    saveCreative: (bundleId: string, prompt: string, settings: unknown) => ipcRenderer.invoke('generation:save-settings', { bundleId, prompt, settings }),
+    startGeneration: (bundleId: string) => ipcRenderer.invoke('generation:start', { bundleId }),
+    listGenerations: (bundleId: string) => ipcRenderer.invoke('generation:list', { bundleId }),
+    revealVideo: (jobId: string) => ipcRenderer.invoke('generation:reveal', { jobId }),
     // Platform sessions
     getPlatform: () => ipcRenderer.invoke('poc:get-platform'),
     listProfiles: () => ipcRenderer.invoke('poc:list-profiles'),

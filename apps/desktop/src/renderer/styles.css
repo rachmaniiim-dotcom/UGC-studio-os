@@ -101,3 +101,9 @@ dl.facts dd { margin: 0; }
 .meta { font-size: 0.85rem; color: var(--muted); word-break: break-all; }
 .status { font-weight: 600; }
 pre { font-size: 0.8rem; white-space: pre-wrap; background: var(--chip-bg); padding: 8px; border-radius: 6px; }
+
+.video-grid { grid-template-columns: 180px 140px 140px; }
+.library-title { margin-top: 14px; }
+table.jobs { width: 100%; border-collapse: collapse; }
+table.jobs td { padding: 6px 8px; border-top: 1px solid var(--border); vertical-align: middle; }
+

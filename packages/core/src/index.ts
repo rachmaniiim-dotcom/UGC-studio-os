@@ -55,3 +55,22 @@ export {
   type BundleStatus,
   type ProductionMode,
 } from './accounts/model.js';
+export {
+  DEFAULT_VIDEO_SETTINGS,
+  MAX_PROMPT_CHARS,
+  canTransition,
+  isTerminal,
+  looksLikeMp4,
+  needsUser,
+  validateCreativeInput,
+  type AspectRatio,
+  type CreativeIssue,
+  type CreativeSettings,
+  type GenerationErrorCode,
+  type GenerationRequest,
+  type JobState,
+  type ProviderStatus,
+  type QualityTier,
+  type VideoGenerationProvider,
+  type VideoSettings,
+} from './generation/model.js';

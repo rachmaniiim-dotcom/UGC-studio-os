@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { challengeMatches, chromiumProxyRules, validateProxyInput, type Logger, type ProxyEndpoint } from '@ugc/core';
 import type { RuntimeConfig } from './config.js';
 import { PROFILE_ID, type AccountBundle, type BundleStore, type PocProfile, type ProfileStore, type ProxyState } from './profiles.js';
-import { protectedStorageAvailable, writeAtomic } from './session-sync.js';
+import { writeAtomic } from './atomic.js';
+import { protectedStorageAvailable } from './session-sync.js';
 
 /**
  * Dedicated proxy per Account Bundle (Gate 3).

@@ -48,7 +48,8 @@ export const GOOGLE_FLOW: PlatformDefinition = {
   displayName: 'Google Flow',
   cookieDomains: ['google.com', 'labs.google'],
   navigationDomains: ['google.com', 'labs.google'],
-  pages: { home: 'https://labs.google/fx/tools/flow' },
+  // Flow moved to flow.google.com (the labs.google address redirects there; observed 2026-10-22).
+  pages: { home: 'https://flow.google.com/' },
   ...MANUAL_ONLY('No Google Flow automation approved; manual session only (R-02)'),
   accountBoundary: 'one_account_per_profile',
 };
@@ -82,7 +83,7 @@ function syntheticStandIn(real: PlatformDefinition, origin: string): PlatformDef
     cookieDomains: [host],
     navigationDomains: [host],
     // Test-only pages (rotation, logout, a site asking for HTTP auth) exist on the synthetic stand-ins only.
-    pages: { home: `${base}/`, rotate: `${base}/rotate`, logout: `${base}/logout`, 'basic-auth': `${base}/basic-auth` },
+    pages: { home: `${base}/`, rotate: `${base}/rotate`, logout: `${base}/logout`, 'basic-auth': `${base}/basic-auth`, download: `${base}/flow-download` },
   };
 }
 

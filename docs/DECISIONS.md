@@ -18,4 +18,5 @@ Product-owner decisions on the Gate 0 proposals (`docs/gate-0/ARCHITECTURE_REPOR
 | D17 | Gate 2 manual Kalodata validation run by the owner (export never seen by Claude); results in `docs/gate-2/GATE2_REPORT.md` | Done | 2026-10-22 |
 | D18 | Gate 3 direction approved with changes: dedicated proxy per Account Bundle (no proxy purchasing/provider management); paste or file import of Cookie-Editor JSON in Add/Edit Account; Q1–Q7 as in `docs/gate-3/GATE3_PLAN.md`; proxy-isolation PoC before the full UI | Approved | 2026-10-22 |
 | D19 | Gate 3 Account Setup approved and implemented: Account Bundles (SQLite metadata), dedicated proxy per bundle (fail closed, DPAPI-sealed credentials), per-platform paste or file import, React UI. Synthetic-only automated tests | Approved, implemented | 2026-10-22 |
+| D20 | Gate 4: Google Flow stays the preferred provider (no paid Gemini API now). Manual interactive Flow test first; build only the platform-independent generation interface with a synthetic provider; no real-Flow automation, bulk, TikTok posting or scheduling until approved | Approved | 2026-10-22 |
 | D4, D6, D7, D8, D9, D12 | Not yet decided | Open | — |

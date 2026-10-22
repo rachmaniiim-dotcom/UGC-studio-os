@@ -5,8 +5,21 @@ import type { RuntimeConfig } from './config.js';
 const hardened = new WeakSet<Session>();
 
 /**
+ * Decides one download for a session: return true to accept it (the handler
+ * then sets the save path), false to block. Sessions without a handler block
+ * every download.
+ */
+export type DownloadHandler = (item: Electron.DownloadItem) => boolean;
+const downloadHandlers = new WeakMap<Session, DownloadHandler>();
+
+export function setDownloadHandler(ses: Session, handler: DownloadHandler): void {
+  downloadHandlers.set(ses, handler);
+}
+
+/**
  * Applies the restrictions every profile partition gets: no permissions,
- * no downloads, and (synthetic mode only) trust for exactly one test
+ * no downloads unless a narrow per-session handler accepts one (see
+ * downloads.ts), and (synthetic mode only) trust for exactly one test
  * certificate on the synthetic hostnames.
  */
 export function hardenSession(ses: Session, config: RuntimeConfig, platform: PlatformDefinition | null, log: Logger): Session {
@@ -18,7 +31,9 @@ export function hardenSession(ses: Session, config: RuntimeConfig, platform: Pla
     callback(false);
   });
   ses.setPermissionCheckHandler(() => false);
-  ses.on('will-download', (event) => {
+  ses.on('will-download', (event, item) => {
+    const handler = downloadHandlers.get(ses);
+    if (handler && handler(item)) return;
     event.preventDefault();
     log.info('download_blocked');
   });

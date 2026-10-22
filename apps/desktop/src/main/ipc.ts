@@ -1,4 +1,4 @@
-import { dialog, ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import { readFile, stat } from 'node:fs/promises';
 import {
   BUNDLE_PLATFORMS,
@@ -7,7 +7,9 @@ import {
   importCookieEditorExport,
   oversizedFileResult,
   validateAccountInput,
+  validateCreativeInput,
   type BundleStatus,
+  type CreativeSettings,
   type ImportReport,
   type Logger,
   type PlatformDefinition,
@@ -15,6 +17,9 @@ import {
 import type { RuntimeConfig } from './config.js';
 import { replaceCookies, type LoadResult } from './electron-cookies.js';
 import { cookieEncryptionFuseEnabled } from './fuses.js';
+import { GenerationError, type GenerationService } from './generation.js';
+import type { GenerationJob, GenerationStore } from './generation-store.js';
+import type { VideoLibrary } from './library.js';
 import { SYNTHETIC_PLATFORM_ID } from './platforms.js';
 import { PROFILE_ID, type AccountBundle, type BundleStore, type ImportSummary, type PocProfile, type ProfileStore, type ProxyState } from './profiles.js';
 import { ProxyError, type ProxyInput, type ProxyService } from './proxy.js';
@@ -39,6 +44,13 @@ export type IpcErrorCode =
   | 'proxy_not_ready'
   | 'protected_storage_unavailable'
   | 'file_unreadable'
+  | 'invalid_creative'
+  | 'not_growth_account'
+  | 'no_creative_settings'
+  | 'no_provider'
+  | 'job_in_progress'
+  | 'daily_cap_reached'
+  | 'unknown_job'
   | 'internal_error';
 
 /** `details` carries sanitized issue codes (e.g. which field is invalid), never input values. */
@@ -64,6 +76,11 @@ export interface IpcDeps {
   readonly sync: SessionSync | null;
   readonly proxies: ProxyService | null;
   readonly userData: string;
+  readonly generation: GenerationService;
+  readonly jobs: GenerationStore;
+  readonly library: VideoLibrary;
+  /** Called for each newly created bundle session (e.g. to attach the Flow download policy). */
+  readonly onSessionCreated: (profile: PocProfile) => void;
 }
 
 /** What the UI may know about a platform. */
@@ -86,6 +103,14 @@ export interface AccountView {
   readonly status: BundleStatus;
   readonly proxy: ProxyState | null;
   readonly sessions: readonly SessionView[];
+  /** Saved creative brief (the owner's own text) and video settings, or null. */
+  readonly creative: CreativeSettings | null;
+  readonly generation: {
+    readonly provider: { readonly id: string; readonly displayName: string; readonly kind: string } | null;
+    readonly unavailableReason: string | null;
+    readonly dailyCap: number;
+    readonly usedToday: number;
+  };
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -131,7 +156,21 @@ export interface ImportOutcome {
   readonly profile: PocProfile;
 }
 
-export function registerIpc({ config, sessions, bundles, log, mainWindow, platforms, sync, proxies, userData }: IpcDeps): void {
+export function registerIpc({
+  config,
+  sessions,
+  bundles,
+  log,
+  mainWindow,
+  platforms,
+  sync,
+  proxies,
+  userData,
+  generation,
+  jobs,
+  library,
+  onSessionCreated,
+}: IpcDeps): void {
   const devTools = config.synthetic;
   const platformOf = (profile: PocProfile): PlatformDefinition | undefined => platforms.get(profile.platformId);
   const sessionOf = (profile: PocProfile) => profileSession(profile.partition, config, platformOf(profile) ?? null, log);
@@ -170,6 +209,15 @@ export function registerIpc({ config, sessions, bundles, log, mainWindow, platfo
         const platform = platformOf(s);
         return platform ? [{ ...s, platform: platformInfo(platform) }] : [];
       }),
+      creative: jobs.getCreative(bundle.id),
+      generation: {
+        provider: generation.provider
+          ? { id: generation.provider.id, displayName: generation.provider.displayName, kind: generation.provider.kind }
+          : null,
+        unavailableReason: generation.unavailableReason,
+        dailyCap: generation.dailyCap,
+        usedToday: jobs.countToday(bundle.id),
+      },
       createdAt: bundle.createdAt,
       updatedAt: bundle.updatedAt,
     };
@@ -253,6 +301,7 @@ export function registerIpc({ config, sessions, bundles, log, mainWindow, platfo
       for (const s of sessions.forBundle(bundle.id)) {
         await proxies?.attachSession(s);
         sync?.watch(s);
+        onSessionCreated(s);
       }
       log.info('account_created', { bundleId: bundle.id, mode: bundle.mode });
       return viewOf(bundle);
@@ -294,6 +343,44 @@ export function registerIpc({ config, sessions, bundles, log, mainWindow, platfo
       await requireImportAllowed();
       const updated = await importBytes(profile, platform, Buffer.from(text, 'utf8'));
       return { ...updated, platform: platformInfo(platform) };
+    },
+
+    // ---- Video generation (Gate 4): one job at a time, no bulk, no schedule ----
+
+    'generation:save-settings': async (payload): Promise<AccountView> => {
+      const request = requireObject(payload, ['bundleId', 'prompt', 'settings']);
+      const bundle = requireBundle(request);
+      const valid = validateCreativeInput({ prompt: request['prompt'], settings: request['settings'] });
+      if (!valid.ok) throw new IpcError('invalid_creative', valid.issues);
+      jobs.saveCreative(bundle.id, valid.value);
+      log.info('creative_settings_saved', { bundleId: bundle.id });
+      return viewOf(bundles.get(bundle.id)!);
+    },
+
+    'generation:start': async (payload): Promise<GenerationJob> => {
+      const bundle = requireBundle(requireObject(payload, ['bundleId']));
+      try {
+        return generation.start(bundle.id);
+      } catch (err) {
+        if (err instanceof GenerationError) throw new IpcError(err.code);
+        throw err;
+      }
+    },
+
+    'generation:list': async (payload): Promise<readonly GenerationJob[]> => {
+      const bundle = requireBundle(requireObject(payload, ['bundleId']));
+      return jobs.list(bundle.id);
+    },
+
+    // Shows a finished video in Explorer. The app itself never opens or reads the video's content.
+    'generation:reveal': async (payload): Promise<{ shown: boolean }> => {
+      const request = requireObject(payload, ['jobId']);
+      const id = request['jobId'];
+      if (typeof id !== 'string' || !PROFILE_ID.test(id)) throw new IpcError('invalid_request');
+      const job = jobs.get(id);
+      if (!job || job.state !== 'completed' || !job.videoFile) throw new IpcError('unknown_job');
+      shell.showItemInFolder(library.absolute(job.videoFile));
+      return { shown: true };
     },
 
     // ---- Platform sessions (shared by bundle sessions and the earlier gates' test profiles) ----

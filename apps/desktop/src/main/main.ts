@@ -5,7 +5,12 @@ import { fileURLToPath } from 'node:url';
 import { createLogger, type PlatformDefinition } from '@ugc/core';
 import { registerAppScheme, serveAppProtocol } from './app-protocol.js';
 import { readRuntimeConfig } from './config.js';
+import { attachFlowDownloads } from './downloads.js';
+import { GenerationService } from './generation.js';
+import { GenerationStore } from './generation-store.js';
 import { registerIpc } from './ipc.js';
+import { VideoLibrary } from './library.js';
+import { SyntheticVideoProvider } from './synthetic-provider.js';
 import { resolvePlatforms, SYNTHETIC_PLATFORM_ID } from './platforms.js';
 import { BundleStore, MetadataDb, ProfileStore, type PocProfile } from './profiles.js';
 import { ProxyService, PUBLIC_DIAGNOSTIC_ENDPOINTS, syntheticDiagnosticEndpoints } from './proxy.js';
@@ -87,8 +92,48 @@ if (securityCheck) {
     sync = new SessionSync({ dir: restoreDir, store: sessions, platformOf, log, sessionOf });
     await sync.start();
 
+    // Video generation (Gate 4). Only the synthetic provider exists: automating the real
+    // Google Flow website is not approved until its permitted use and feasibility are established.
+    const jobs = new GenerationStore(meta);
+    const library = new VideoLibrary(userData);
+    const generation = new GenerationService({
+      bundles,
+      jobs,
+      library,
+      log,
+      provider: config.synthetic ? new SyntheticVideoProvider() : null,
+      unavailableReason: config.synthetic ? null : 'Automated Google Flow generation is not enabled yet. Generate in the Google Flow window and download the video: it is saved to this account’s library.',
+      dailyCap: 3,
+      pollIntervalMs: config.synthetic ? 100 : 2000,
+      timeoutMs: 20 * 60 * 1000,
+      ensureNetworkReady: async () => {
+        throw new Error('no network provider configured');
+      },
+    });
+    generation.reconcile();
+    // The one download exception: videos the owner downloads in a bundle's Google Flow window.
+    const attachDownloads = (p: PocProfile): void => {
+      const platform = platformOf(p);
+      if (platform) attachFlowDownloads(p, platform, sessionOf(p), { library, jobs, log, synthetic: config.synthetic });
+    };
+    for (const p of sessions.list()) attachDownloads(p);
+
     serveAppProtocol(join(here, '..', 'renderer'));
-    registerIpc({ config, sessions, bundles, log, mainWindow: () => mainWindow, platforms, sync, proxies, userData });
+    registerIpc({
+      config,
+      sessions,
+      bundles,
+      log,
+      mainWindow: () => mainWindow,
+      platforms,
+      sync,
+      proxies,
+      userData,
+      generation,
+      jobs,
+      library,
+      onSessionCreated: attachDownloads,
+    });
     mainWindow = createMainWindow(join(here, '..', 'preload', 'preload.cjs'), config.synthetic, log);
     mainWindow.on('closed', () => (mainWindow = null));
     log.info('app_ready', { synthetic: config.synthetic, accounts: bundles.list().length, sessions: sessions.list().length });

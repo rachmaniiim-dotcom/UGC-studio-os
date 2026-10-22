@@ -30,6 +30,7 @@ export const PATH_RULES = [
   { id: 'profile-metadata', pattern: /(^|\/)(poc-profiles\.json(\.migrated)?|ugc\.db(-journal|-wal)?)$/ },
   { id: 'proxy-credentials', pattern: /(^|\/)proxy-secrets\/|\.proxy$/ },
   { id: 'app-log', pattern: /(^|\/)logs\/[^/]*\.log$/ },
+  { id: 'video-or-library', pattern: /(^|\/)library\/|\.(mp4|mp4\.part|mov|webm)$/i },
 ];
 
 // Files that legitimately contain the patterns as patterns.

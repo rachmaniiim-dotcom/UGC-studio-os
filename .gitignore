@@ -36,6 +36,12 @@ poc-profiles.json.migrated
 *.db-wal
 proxy-secrets/
 *.proxy
+# Generated or downloaded videos and account libraries (owner content).
+library/
+*.mp4
+*.mp4.part
+*.mov
+*.webm
 logs/
 *.log
 *.tmp

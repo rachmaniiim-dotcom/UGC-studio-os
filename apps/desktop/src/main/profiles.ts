@@ -125,6 +125,37 @@ const MIGRATIONS: readonly string[] = [
      updated_at TEXT NOT NULL,
      UNIQUE (bundle_id, platform_id)
    );`,
+  // Gate 4: video generation. Jobs keep no prompt copy, no provider text and no page content.
+  `CREATE TABLE creative_settings (
+     bundle_id TEXT PRIMARY KEY REFERENCES account_bundles(id),
+     prompt TEXT NOT NULL,
+     settings_json TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE TABLE generation_jobs (
+     id TEXT PRIMARY KEY,
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     source TEXT NOT NULL CHECK (source IN ('provider', 'manual_download')),
+     provider_id TEXT NOT NULL,
+     state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'completed', 'waiting_for_user', 'failed')),
+     settings_json TEXT,
+     progress REAL,
+     error_code TEXT,
+     needs_user INTEGER NOT NULL DEFAULT 0,
+     video_file TEXT,
+     video_bytes INTEGER,
+     video_sha256 TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE TABLE generation_events (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     job_id TEXT NOT NULL REFERENCES generation_jobs(id),
+     at TEXT NOT NULL,
+     from_state TEXT,
+     to_state TEXT NOT NULL,
+     code TEXT
+   );`,
 ];
 
 export class MetadataDb {

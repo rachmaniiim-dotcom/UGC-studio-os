@@ -13,6 +13,7 @@ import {
   type Result,
 } from './bridge.js';
 import { Badge } from './Badge.js';
+import { VideoSection } from './VideoSection.js';
 
 type Notice = { tone: 'ok' | 'bad' | 'warn'; text: string; recovery?: string; fields?: string[] } | null;
 
@@ -86,6 +87,7 @@ export function AccountEditor(props: {
           </>
         )}
       </section>
+      {account?.mode === 'account_growth' && <VideoSection account={account} onChanged={props.onRefresh} />}
       <div className="footer-actions">
         <button type="button" className="primary" onClick={() => void props.onClose()} disabled={!account}>
           Save and close

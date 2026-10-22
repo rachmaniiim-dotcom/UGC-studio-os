@@ -64,6 +64,29 @@ export interface ProxyState {
 
 export type Mode = 'affiliate_ugc' | 'account_growth';
 
+export interface VideoSettings {
+  aspectRatio: '9:16' | '16:9' | '1:1';
+  durationSeconds: number;
+  quality: 'fast' | 'quality';
+}
+
+export interface GenerationJob {
+  id: string;
+  bundleId: string;
+  source: 'provider' | 'manual_download';
+  providerId: string;
+  state: 'pending' | 'running' | 'completed' | 'waiting_for_user' | 'failed';
+  settings: VideoSettings | null;
+  progress: number | null;
+  errorCode: string | null;
+  needsUser: boolean;
+  videoFile: string | null;
+  videoBytes: number | null;
+  videoSha256: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Account {
   id: string;
   displayName: string;
@@ -71,6 +94,13 @@ export interface Account {
   status: 'draft' | 'proxy_check_needed' | 'operational' | 'attention';
   proxy: ProxyState | null;
   sessions: AccountSession[];
+  creative: { prompt: string; settings: VideoSettings } | null;
+  generation: {
+    provider: { id: string; displayName: string; kind: string } | null;
+    unavailableReason: string | null;
+    dailyCap: number;
+    usedToday: number;
+  };
   createdAt: string;
   updatedAt: string;
 }
@@ -90,6 +120,10 @@ interface UgcBridge {
   setAccountProxy(bundleId: string, proxy: Partial<ProxyForm>, keepCredentials: boolean): Promise<Result<Account>>;
   testAccountProxy(bundleId: string): Promise<Result<Account>>;
   importSessionText(profileId: string, text: string): Promise<Result<AccountSession>>;
+  saveCreative(bundleId: string, prompt: string, settings: VideoSettings): Promise<Result<Account>>;
+  startGeneration(bundleId: string): Promise<Result<GenerationJob>>;
+  listGenerations(bundleId: string): Promise<Result<GenerationJob[]>>;
+  revealVideo(jobId: string): Promise<Result<{ shown: boolean }>>;
   getPlatform(): Promise<Result<PlatformInfo | null>>;
   listProfiles(): Promise<Result<Session[]>>;
   importCookies(profileId: string): Promise<Result<{ canceled: boolean; profile: Session }>>;
@@ -152,6 +186,13 @@ const MESSAGES: Record<string, [message: string, recovery: string]> = {
   platform_not_active: ['This session is not available in this mode.', 'Restart the app.'],
   unknown_account: ['This account no longer exists.', 'Go back to the account list.'],
   unknown_profile: ['This session no longer exists.', 'Go back to the account list.'],
+  invalid_creative: ['Some video settings are invalid.', 'Fix the fields marked below.'],
+  not_growth_account: ['Video generation is only available for Account Growth accounts in this milestone.', 'Switch the mode in step 1 if this is a growth account.'],
+  no_creative_settings: ['There is no saved prompt yet.', 'Write the prompt and press Save video settings.'],
+  no_provider: ['Automated generation is not enabled yet.', 'Generate in the Google Flow window and download the video; it is saved to this account’s library.'],
+  job_in_progress: ['A video is already being generated for this account.', 'Wait for it to finish.'],
+  daily_cap_reached: ['The daily limit for this account is reached.', 'Try again tomorrow.'],
+  unknown_job: ['That video is no longer available.', 'Refresh the list.'],
   untrusted_sender: ['The request was refused.', 'Restart the app.'],
   internal_error: ['Something went wrong.', 'Try again; if it repeats, restart the app.'],
 };
@@ -165,6 +206,10 @@ const FIELD_MESSAGES: Record<string, string> = {
   invalid_password: 'The password contains characters that are not allowed.',
   socks5_auth_unsupported: 'SOCKS5 with a username and password is not supported. Use your provider’s HTTP or HTTPS endpoint.',
   invalid_display_name: 'Enter a name of 1–64 characters.',
+  invalid_prompt: 'Enter a prompt (up to 4,000 characters).',
+  invalid_aspect_ratio: 'Choose an aspect ratio.',
+  invalid_duration: 'Choose a duration between 2 and 30 seconds.',
+  invalid_quality: 'Choose a quality.',
   invalid_mode: 'Choose a production mode.',
 };
 
@@ -194,3 +239,18 @@ export function describeImport(s: ImportSummary): { tone: 'ok' | 'bad' | 'warn';
   if (outOfScope) parts.push(`${outOfScope} belong to another website. Export from this platform's tab`);
   return { tone: s.browserLoaded > 0 ? (s.rejected ? 'warn' : 'ok') : 'bad', text: parts.join(' · ') };
 }
+
+/** What a job's outcome means for the owner. Codes only; never provider text. */
+const JOB_OUTCOMES: Record<string, string> = {
+  challenge_required: 'A verification or "unusual activity" check appeared. Nothing was bypassed: complete it yourself in the Google Flow window.',
+  auth_required: 'Not signed in. Open the Google Flow browser, sign in, then try again.',
+  quota_exhausted: 'Out of credits or daily limit for now.',
+  rate_limited: 'The provider asked to slow down. Try again later.',
+  policy_rejected: 'The prompt or video was refused under the provider’s content rules. Change the prompt.',
+  interface_changed: 'The provider’s page changed and the integration needs an update.',
+  transient: 'The task stopped (timeout, interruption or temporary error). It was not retried automatically.',
+  output_invalid: 'The result was not a valid MP4 and was not saved.',
+  cancelled: 'Cancelled.',
+};
+
+export const describeJobOutcome = (code: string | null): string => (code ? (JOB_OUTCOMES[code] ?? 'The task stopped.') : '');

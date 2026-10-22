@@ -183,6 +183,30 @@ export async function startSyntheticSite(): Promise<SyntheticSite> {
       case '/basic-auth':
         res.writeHead(401, { 'www-authenticate': 'Basic realm="synthetic-site"', 'content-type': 'text/plain' });
         return void res.end('site authentication required');
+      // Stand-in for a Flow page with a finished video: an MP4 link and a non-video link.
+      case '/flow-download':
+        return html(
+          res,
+          `<!doctype html><html><head><meta charset="utf-8"><title>Synthetic Flow</title></head><body>
+<p id="status" data-state="ready">Video ready</p>
+<a id="mp4" href="/video.mp4" download="clip.mp4">Download MP4</a>
+<a id="txt" href="/notes.txt" download="notes.txt">Download notes</a>
+<a id="fake" href="/fake.mp4" download="fake.mp4">Download fake MP4</a>
+</body></html>`,
+        );
+      case '/video.mp4': {
+        const ftyp = Buffer.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 2, 0, 0x69, 0x73, 0x6f, 0x6d, 0x6d, 0x70, 0x34, 0x31]);
+        const body = Buffer.concat([ftyp, Buffer.alloc(32 * 1024, 7)]);
+        res.writeHead(200, { 'content-type': 'video/mp4', 'content-length': body.length, 'content-disposition': 'attachment; filename="clip.mp4"' });
+        return void res.end(body);
+      }
+      case '/fake.mp4':
+        // Claims to be an MP4 but isn't one: must be rejected after download.
+        res.writeHead(200, { 'content-type': 'video/mp4', 'content-disposition': 'attachment; filename="fake.mp4"' });
+        return void res.end('<html>not a video</html>');
+      case '/notes.txt':
+        res.writeHead(200, { 'content-type': 'text/plain', 'content-disposition': 'attachment; filename="notes.txt"' });
+        return void res.end('not a video');
       case '/logout':
         if (token) users.delete(token);
         return html(res, PAGE(MARK_SCRIPT('logged-out', 'Logged out')), {

@@ -1,6 +1,7 @@
 import { safeStorage, type Session } from 'electron';
 import { createHash } from 'node:crypto';
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { writeAtomic } from './atomic.js';
 import { join } from 'node:path';
 import {
   decodeRevisionRecord,
@@ -76,18 +77,6 @@ export function snapshotPaths(dir: string, profileId: string): { record: string;
   return { record: join(dir, `${profileId}.sealed`), revision: join(dir, `${profileId}.rev`) };
 }
 
-/** Writes `data` to a temp file, fsyncs it, then renames it over `file`. */
-export function writeAtomic(file: string, data: Buffer): void {
-  const tmp = `${file}.tmp`;
-  const fd = openSync(tmp, 'w', 0o600);
-  try {
-    writeSync(fd, data);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  renameSync(tmp, file);
-}
 
 function readOptional(file: string): Buffer | null {
   try {
