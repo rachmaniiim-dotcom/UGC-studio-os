@@ -61,7 +61,7 @@ async function setup() {
     const done = jobs.transition(job.id, 'completed', { video: stored });
     await studio.jobEnded(done, pool.recordDownload(done));
   };
-  return { userData, bundles, jobs, pool, studio, products, aff, flowPool, productRow, ready, clip, download, lines, make };
+  return { userData, bundles, jobs, pool, studio, products, prompts, aff, flowPool, productRow, ready, clip, download, lines, make };
 }
 
 const code = async (fn: () => unknown): Promise<string | undefined> => {
@@ -197,6 +197,64 @@ describe.skipIf(!FFMPEG)('Affiliate Creative Studio with local FFmpeg (synthetic
     expect(await code(() => studio.view(growth.id, productRow))).toBe('not_affiliate_account');
     expect(AffiliateStudioError).toBeDefined();
   }, 120_000);
+});
+
+describe('A3: listing fill, one-click videos and the clip queue', () => {
+  it('a listing read from the page makes the product ready; one click plans and approves; clips go to Flow one at a time, in order', async () => {
+    const env = await setup();
+    const { studio, products, prompts, aff, flowPool, productRow, userData } = env;
+    // What the listing reader found on the product page, with its photo saved as a reference image.
+    const png = join(userData, 'listing.png');
+    writeFileSync(png, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 1)]));
+    const photo = await prompts.addReference(aff.id, png, true);
+    products.applyListing(
+      aff.id,
+      productRow,
+      { title: 'Serum Glow Sintetis 30 ml', shopName: 'Toko Glow Sintetis', priceIdr: 89000, description: 'Manfaat: membantu mencerahkan kulit kusam. Isi 30 ml.', features: ['Membantu mencerahkan kulit kusam', 'Isi 30 ml'] },
+      photo.id,
+    );
+    expect(products.view(aff.id).products[0]).toMatchObject({
+      listing: 'confirmed',
+      imageAssetId: photo.id,
+      facts: { title: 'Serum Glow Sintetis 30 ml', shopName: 'Toko Glow Sintetis', priceIdr: 89000, features: ['Membantu mencerahkan kulit kusam', 'Isi 30 ml'], notes: 'Manfaat: membantu mencerahkan kulit kusam. Isi 30 ml.' },
+    });
+    // A second read without a photo keeps the saved one; empty fields keep what was there.
+    products.applyListing(aff.id, productRow, { title: 'Serum Glow Sintetis 30 ml', shopName: '', priceIdr: null, description: '', features: [] }, null);
+    expect(products.view(aff.id).products[0]).toMatchObject({ imageAssetId: photo.id, facts: { shopName: 'Toko Glow Sintetis', priceIdr: 89000, features: ['Membantu mencerahkan kulit kusam', 'Isi 30 ml'] } });
+
+    // One click: 3 plans (the configured count), all approved; the product photo is their reference.
+    studio.saveConfig(aff.id, { ...studio.config(aff.id), count: 3 });
+    expect(await code(() => studio.nextClip(aff.id, productRow))).toBe('nothing_to_send');
+    expect(studio.makeVideos(aff.id, productRow)).toMatchObject({ approved: 3, blocked: 0 });
+    const videos = [...studio.view(aff.id, productRow).videos].sort((a, b) => a.position - b.position);
+    expect(videos.map((v) => [v.status, v.continuity])).toEqual([
+      ['approved', 'cut'],
+      ['approved', 'cut'],
+      ['approved', 'cut'],
+    ]);
+    expect(videos[0]!.clips[0]!.manualSteps[0]).toContain('listing.png');
+    expect(videos[0]!.clipA.sections.map((x) => x.text).join(' ')).toContain('uploaded product reference image');
+
+    // The queue: Clip A then Clip B of video 1, then video 2 — never two clips in Flow at once.
+    const first = studio.nextClip(aff.id, productRow);
+    expect(first).toBe(videos[0]!.clips.find((c) => c.slot === 'A')!.id);
+    studio.handOff(aff.id, first, flowPool.id);
+    expect(await code(() => studio.nextClip(aff.id, productRow))).toBe('nothing_to_send');
+    studio.clipFailed(aff.id, first, 'render_error');
+    // A failed clip comes back first while it has attempts left.
+    expect(studio.nextClip(aff.id, productRow)).toBe(first);
+    studio.handOff(aff.id, first, flowPool.id);
+    studio.clipFailed(aff.id, first, 'refused');
+    studio.handOff(aff.id, studio.nextClip(aff.id, productRow), flowPool.id); // third and last attempt for Clip A
+    studio.clipFailed(aff.id, first, 'no_output');
+    expect(studio.nextClip(aff.id, productRow)).toBe(videos[0]!.clips.find((c) => c.slot === 'B')!.id);
+
+    // Drafts can also be approved together; a blocked one stays a draft.
+    studio.generate(aff.id, productRow);
+    const drafts = studio.view(aff.id, productRow).videos.filter((v) => v.status === 'draft');
+    expect(drafts).toHaveLength(3);
+    expect(studio.approveAll(aff.id, productRow)).toEqual({ approved: 3, blocked: 0 });
+  });
 });
 
 describe.runIf(!FFMPEG)('Affiliate Creative Studio without FFmpeg', () => {

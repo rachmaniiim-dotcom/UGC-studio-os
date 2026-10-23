@@ -67,6 +67,9 @@ contextBridge.exposeInMainWorld(
     updateVideoPlan: (bundleId: string, productRowId: string, videoId: string, edit: unknown) => ipcRenderer.invoke('astudio:update-plan', { bundleId, productRowId, videoId, edit }),
     videoPlanAction: (bundleId: string, productRowId: string, videoId: string, action: string) => ipcRenderer.invoke('astudio:plan-action', { bundleId, productRowId, videoId, action }),
     handOffClip: (bundleId: string, productRowId: string, clipId: string, flowBundleId: string | null) => ipcRenderer.invoke('astudio:hand-off', { bundleId, productRowId, clipId, flowBundleId }),
+    makeVideos: (bundleId: string, productRowId: string) => ipcRenderer.invoke('astudio:make-videos', { bundleId, productRowId }),
+    approveAllPlans: (bundleId: string, productRowId: string) => ipcRenderer.invoke('astudio:approve-all', { bundleId, productRowId }),
+    sendNextClip: (bundleId: string, productRowId: string, flowBundleId: string | null) => ipcRenderer.invoke('astudio:send-next', { bundleId, productRowId, flowBundleId }),
     copyClipPrompt: (bundleId: string, clipId: string) => ipcRenderer.invoke('astudio:copy-clip', { bundleId, clipId }),
     clipFailed: (bundleId: string, productRowId: string, clipId: string, reason: string) => ipcRenderer.invoke('astudio:clip-failed', { bundleId, productRowId, clipId, reason }),
     markClipUnusable: (bundleId: string, productRowId: string, clipId: string, reason: string) => ipcRenderer.invoke('astudio:mark-unusable', { bundleId, productRowId, clipId, reason }),
@@ -88,6 +91,7 @@ contextBridge.exposeInMainWorld(
     setProductListing: (bundleId: string, id: string, state: string) => ipcRenderer.invoke('affiliate:set-listing', { bundleId, id, state }),
     setProductEligibility: (bundleId: string, id: string, state: string) => ipcRenderer.invoke('affiliate:set-eligibility', { bundleId, id, state }),
     openProductPage: (bundleId: string, id: string) => ipcRenderer.invoke('affiliate:open-product', { bundleId, id }),
+    fillProductFromListing: (bundleId: string, id: string, usePhoto: boolean) => ipcRenderer.invoke('affiliate:autofill', { bundleId, id, usePhoto }),
     openShowcasePage: (bundleId: string, id: string) => ipcRenderer.invoke('affiliate:open-showcase', { bundleId, id }),
     showcaseAction: (bundleId: string, id: string, action: string) => ipcRenderer.invoke('affiliate:showcase', { bundleId, id, action }),
     // Platform sessions

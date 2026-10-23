@@ -68,7 +68,9 @@ describe('clip-pair plans', () => {
       expect(renderText(p.clipB)).toContain(p.axes['reactor']!);
       expect(renderText(p.clipB)).not.toContain('last frame of Clip A');
     }
-    expect(planClipPairs(FACTS, { ...DEFAULT_AFFILIATE_CONFIG, count: 4 }, 's').plans.map((p) => p.continuity)).toEqual(['seamless', 'cut', 'seamless', 'cut']);
+    expect(planClipPairs(FACTS, { ...DEFAULT_AFFILIATE_CONFIG, continuity: 'mixed', count: 4 }, 's').plans.map((p) => p.continuity)).toEqual(['seamless', 'cut', 'seamless', 'cut']);
+    // The default is a comedic cut: no last-frame upload in Flow (A3).
+    expect(DEFAULT_AFFILIATE_CONFIG.continuity).toBe('cut');
   });
 
   it('custom characters are used', () => {

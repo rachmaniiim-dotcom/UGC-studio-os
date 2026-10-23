@@ -247,6 +247,8 @@ export interface AffiliateProduct {
   showcase: ShowcaseState;
   showcaseMethod: 'assisted' | 'api' | null;
   showcaseChangedAt: string | null;
+  /** The listing photo saved as the Flow reference image (A3). */
+  imageAssetId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -477,6 +479,9 @@ interface UgcBridge {
   ): Promise<Result<AffiliateStudioView>>;
   videoPlanAction(bundleId: string, productRowId: string, videoId: string, action: 'approve' | 'reject' | 'reopen'): Promise<Result<AffiliateStudioView>>;
   handOffClip(bundleId: string, productRowId: string, clipId: string, flowBundleId: string | null): Promise<Result<AffiliateStudioView>>;
+  makeVideos(bundleId: string, productRowId: string): Promise<Result<{ batchId: string; approved: number; blocked: number; view: AffiliateStudioView }>>;
+  approveAllPlans(bundleId: string, productRowId: string): Promise<Result<{ approved: number; blocked: number; view: AffiliateStudioView }>>;
+  sendNextClip(bundleId: string, productRowId: string, flowBundleId: string | null): Promise<Result<{ clipId: string; view: AffiliateStudioView }>>;
   copyClipPrompt(bundleId: string, clipId: string): Promise<Result<{ copied: boolean }>>;
   clipFailed(bundleId: string, productRowId: string, clipId: string, reason: string): Promise<Result<AffiliateStudioView>>;
   markClipUnusable(bundleId: string, productRowId: string, clipId: string, reason: string): Promise<Result<AffiliateStudioView>>;
@@ -502,6 +507,7 @@ interface UgcBridge {
   setProductListing(bundleId: string, id: string, state: AffiliateProduct['listing']): Promise<Result<AffiliateView>>;
   setProductEligibility(bundleId: string, id: string, state: AffiliateProduct['eligibility']): Promise<Result<AffiliateView>>;
   openProductPage(bundleId: string, id: string): Promise<Result<{ opened: boolean }>>;
+  fillProductFromListing(bundleId: string, id: string, usePhoto: boolean): Promise<Result<{ view: AffiliateView; found: string[]; features: number; photo: boolean }>>;
   openShowcasePage(bundleId: string, id: string): Promise<Result<AffiliateView>>;
   showcaseAction(bundleId: string, id: string, action: 'confirm_seen' | 'not_eligible' | 'failed' | 'removed' | 'reset'): Promise<Result<AffiliateView>>;
   getPlatform(): Promise<Result<PlatformInfo | null>>;
@@ -612,6 +618,8 @@ const MESSAGES: Record<string, [message: string, recovery: string]> = {
   stitch_failed: ['Joining the clips failed.', 'Check the reason below; replace a clip if it’s broken.'],
   invalid_limits: ['The limits must be whole numbers (attempts 1–20, videos per product 1–50).', 'Fix them and save again.'],
   invalid_reason: ['Choose a reason.', 'Pick one from the list.'],
+  nothing_to_send: ['No clip to send right now.', 'If a clip is still in Flow, download it there (or mark it failed) first; otherwise make or approve plans.'],
+  listing_unreadable: ['The product page couldn’t be read.', 'Look at the TikTok window: complete any security check or sign-in there, then press “Fill from TikTok” again. You can still type the details in “Edit details”.'],
   not_pool_account: ['That isn’t a Flow pool account.', 'Choose an account created as “Flow pool”.'],
   invalid_pool_settings: ['Some credit settings are invalid.', 'Fix the fields listed below.'],
   invalid_credit_balance: ['That balance isn’t valid.', 'Enter the remaining credits Google Flow shows (a whole number).'],

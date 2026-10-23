@@ -40,7 +40,7 @@ test('Affiliate Products: capture IDs, select for today, confirm listing, assist
 
     // Paste links/IDs: short links are refused with the reason.
     await ui.locator('textarea[name=product-links]').fill(`https://www.tiktok.com/view/product/${A}?region=ID\n${B}\nhttps://vt.tiktok.com/ZSynth/`);
-    await ui.getByRole('button', { name: 'Add products' }).click();
+    await ui.getByRole('button', { name: 'Add and fill from TikTok' }).click();
     await expect(ui.getByTestId('affiliate-notice')).toContainText('2 added, 0 already listed, 1 not recognised');
     await expect(ui.getByTestId('affiliate-notice')).toContainText('Short links');
 
@@ -52,7 +52,9 @@ test('Affiliate Products: capture IDs, select for today, confirm listing, assist
     const kalo = await kaloOpened;
     await kalo.goto(`${new URL(kalo.url()).origin}/product/detail?id=${C}`).catch(() => undefined);
     await ui.getByRole('button', { name: 'Use the product open in Kalodata' }).click();
-    await expect(ui.getByTestId('affiliate-notice')).toContainText(`Product ${C} added.`);
+    // A3: a newly captured product is then read from its listing in this account's TikTok window.
+    await expect(ui.getByTestId('affiliate-notice')).toContainText('Filled “Serum Glow Sintetis 30 ml”: 3 features');
+    await expect(ui.locator(`article[data-product-id="${C}"]`)).toHaveAttribute('data-listing', 'confirmed');
     await kalo.close();
 
     // Today's selection (limit 3).

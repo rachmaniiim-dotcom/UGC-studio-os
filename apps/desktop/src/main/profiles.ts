@@ -399,6 +399,8 @@ export const MIGRATIONS: readonly Migration[] = [
    ALTER TABLE flow_pool_settings ADD COLUMN daily_credit_limit INTEGER;
    ALTER TABLE production_targets ADD COLUMN max_clip_attempts INTEGER;
    ALTER TABLE production_targets ADD COLUMN daily_videos_per_product INTEGER;`,
+  // 9: A3 product photo read from the listing (a reference asset id).
+  `ALTER TABLE affiliate_products ADD COLUMN image_asset_id TEXT;`,
 ];
 
 export class MetadataDb {

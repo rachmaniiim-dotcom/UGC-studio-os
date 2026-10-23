@@ -133,6 +133,16 @@ export function AffiliateStudio(props: { account: Account | null; productRowId: 
   };
   const flowTarget = flowChoice === 'pool' ? null : flowChoice;
   const product = view?.product;
+  // The production queue (A3): drafts to approve, the clip in Flow, clips still to make.
+  const producing = (view?.videos ?? []).filter((v) => v.status === 'approved' || v.status === 'producing');
+  const inFlowVideo = view?.videos.find((v) => v.clips.some((c) => c.status === 'in_flow'));
+  const queue = {
+    drafts: (view?.videos ?? []).filter((v) => v.status === 'draft').length,
+    inFlow: inFlowVideo ? { position: inFlowVideo.position, slot: inFlowVideo.clips.find((c) => c.status === 'in_flow')!.slot } : null,
+    waiting: producing.flatMap((v) => v.clips).filter((c) => (c.status === 'waiting' || c.status === 'unusable') && c.attempts < (view?.limits.maxClipAttempts ?? 0)).length,
+    next: false,
+  };
+  queue.next = queue.waiting > 0;
 
   return (
     <section className="astudio" aria-label="Affiliate Creative Studio">
@@ -173,7 +183,6 @@ export function AffiliateStudio(props: { account: Account | null; productRowId: 
             </div>
           )}
           {!view.ffmpeg.available && <div className="notice warn">FFmpeg wasn’t found, so clips can’t be checked or joined. Install FFmpeg and restart the app.</div>}
-          <Settings accountId={account.id} productRowId={productRowId} view={view} call={call} />
           <section className="card" aria-labelledby="flow-title">
             <h3 id="flow-title">Flow account for the next clip</h3>
             <div className="actions">
@@ -222,10 +231,55 @@ export function AffiliateStudio(props: { account: Account | null; productRowId: 
                 </span>
               </div>
             )}
-            <div className="actions">
+            <div className="actions" data-testid="astudio-quick">
               <button
                 type="button"
-                className="primary"
+                className={queue.next ? '' : 'primary'}
+                disabled={product.readiness.length > 0}
+                onClick={async () => {
+                  const r = await bridge.makeVideos(account.id, productRowId);
+                  if (!r.ok) return setNotice(errNotice(r.error));
+                  setView(r.data.view);
+                  setNotice({
+                    tone: r.data.blocked > 0 ? 'warn' : 'ok',
+                    text: `${r.data.approved} video${r.data.approved === 1 ? '' : 's'} planned and approved${r.data.blocked > 0 ? `; ${r.data.blocked} need a look (see the flags)` : ''}. Next: Send next clip to Flow.`,
+                  });
+                }}
+              >
+                Make {view.config.count} videos
+              </button>
+              {queue.drafts > 0 && (
+                <button type="button" onClick={() => void bridge.approveAllPlans(account.id, productRowId).then((r) => (r.ok ? (setView(r.data.view), setNotice({ tone: r.data.blocked ? 'warn' : 'ok', text: `${r.data.approved} approved${r.data.blocked ? `, ${r.data.blocked} blocked by a flag` : ''}.` })) : setNotice(errNotice(r.error))))}>
+                  Approve all drafts ({queue.drafts})
+                </button>
+              )}
+              <button
+                type="button"
+                className={queue.next ? 'primary' : ''}
+                disabled={!queue.next || queue.inFlow !== null}
+                onClick={async () => {
+                  const r = await bridge.sendNextClip(account.id, productRowId, flowTarget);
+                  if (!r.ok) return setNotice(errNotice(r.error));
+                  setView(r.data.view);
+                  const v = r.data.view.videos.find((x) => x.clips.some((c) => c.id === r.data.clipId));
+                  const c = v?.clips.find((x) => x.id === r.data.clipId);
+                  setNotice({ tone: 'ok', text: `Video ${v?.position ?? '?'} · Clip ${c?.slot ?? '?'}: prompt copied, Flow is open. Paste it, generate, and download the video there; it lands here by itself.` });
+                }}
+              >
+                Send next clip to Flow
+              </button>
+              <span className="small muted" data-testid="astudio-queue">
+                {queue.inFlow
+                  ? `Video ${queue.inFlow.position} · Clip ${queue.inFlow.slot} is in Flow: download it there, or press “Generation failed” on it.`
+                  : queue.next
+                    ? `${queue.waiting} clip${queue.waiting === 1 ? '' : 's'} to make.`
+                    : view.videos.length > 0
+                      ? 'No clips waiting.'
+                      : ''}
+              </span>
+              <button
+                type="button"
+                className="link"
                 disabled={product.readiness.length > 0}
                 onClick={async () => {
                   const r = await bridge.generateVideoPlans(account.id, productRowId);
@@ -235,7 +289,7 @@ export function AffiliateStudio(props: { account: Account | null; productRowId: 
                   setNotice({ tone: 'ok', text: `${n} plan${n === 1 ? '' : 's'} created as drafts. Review and approve the ones to produce.` });
                 }}
               >
-                Generate {view.config.count} plans
+                or plan {view.config.count} as drafts to review first
               </button>
             </div>
             {view.videos.length === 0 && <p className="muted small">No plans yet.</p>}
@@ -252,6 +306,7 @@ export function AffiliateStudio(props: { account: Account | null; productRowId: 
               />
             ))}
           </section>
+          <Settings accountId={account.id} productRowId={productRowId} view={view} call={call} />
         </>
       )}
     </section>

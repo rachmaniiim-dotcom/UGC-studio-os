@@ -57,6 +57,15 @@ export function AffiliateProducts(props: {
   const [notice, setNotice] = useState<Notice>(null);
   const [text, setText] = useState('');
   const [limit, setLimit] = useState('');
+  const [filling, setFilling] = useState<string | null>(null);
+  // The owner's one-time confirmation that listing photos of products they promote may be used as Flow references.
+  const [usePhoto, setUsePhoto] = useState(() => {
+    try {
+      return localStorage.getItem('ugc.listingPhoto') === '1';
+    } catch {
+      return false;
+    }
+  });
 
   const apply = (v: AffiliateView): void => {
     setView(v);
@@ -82,6 +91,30 @@ export function AffiliateProducts(props: {
     setNotice(null);
     apply(r.data);
     return true;
+  };
+  /** A3: reads title, shop, price, description, features (and the photo) from the product's page in this account's TikTok window. */
+  const fill = async (rowId: string): Promise<boolean> => {
+    setFilling(rowId);
+    setNotice({ tone: 'ok', text: 'Reading the product page in this account’s TikTok window… If TikTok shows a security check there, complete it in that window.' });
+    const r = await bridge.fillProductFromListing(account.id, rowId, usePhoto);
+    setFilling(null);
+    if (!r.ok) {
+      setNotice(errNotice(r.error));
+      return false;
+    }
+    apply(r.data.view);
+    const title = r.data.view.products.find((p) => p.id === rowId)?.facts.title ?? '';
+    setNotice({
+      tone: r.data.features > 0 ? 'ok' : 'warn',
+      text: `Filled “${title}”: ${r.data.features} feature${r.data.features === 1 ? '' : 's'}${r.data.photo ? ', photo saved' : ''}.${r.data.features === 0 ? ' No feature lines found: add one in “Edit details”.' : ' Next: Create videos.'}`,
+    });
+    return true;
+  };
+  const fillAdded = async (v: AffiliateView, productIds: readonly string[]): Promise<void> => {
+    for (const pid of productIds) {
+      const row = v.products.find((p) => p.productId === pid);
+      if (row && !(await fill(row.id))) return;
+    }
   };
   const kalodata = account.sessions.find((s) => s.platformId === 'kalodata');
   const today = view?.products.filter((p) => p.selectedToday) ?? [];
@@ -147,12 +180,16 @@ export function AffiliateProducts(props: {
                   if (!r.ok) return setNotice(errNotice(r.error));
                   apply(r.data.view);
                   setNotice({ tone: 'ok', text: r.data.outcome === 'added' ? `Product ${r.data.productId} added.` : `Product ${r.data.productId} was already listed.` });
+                  if (r.data.outcome === 'added') await fillAdded(r.data.view, [r.data.productId]);
                 }}
               >
                 Use the product open in Kalodata
               </button>
             </div>
-            <p className="muted small">Takes only the product ID from the Kalodata window’s address. Or paste TikTok product links or IDs (one per line):</p>
+            <p className="muted small">
+              Paste TikTok product links or IDs (one per line). Each new product is opened in this account’s TikTok window and its title, shop, price, description and
+              features are filled in for you. Or take the product open in Kalodata (only its ID is read from the address).
+            </p>
             <textarea name="product-links" rows={3} value={text} onChange={(e) => setText(e.target.value)} placeholder="https://www.tiktok.com/view/product/1729…" spellCheck={false} />
             <div className="actions">
               <button
@@ -168,10 +205,26 @@ export function AffiliateProducts(props: {
                     tone: rejected.length ? 'warn' : 'ok',
                     text: `${added.length} added, ${existing.length} already listed, ${rejected.length} not recognised${rejected.length ? ` (${rejected.map((x) => `line ${x.line}: ${describeField(x.issue)}`).join('; ')})` : ''}.`,
                   });
+                  if (rejected.length === 0) await fillAdded(r.data.view, added);
                 }}
               >
-                Add products
+                Add and fill from TikTok
               </button>
+              <label className="inline small">
+                <input
+                  type="checkbox"
+                  checked={usePhoto}
+                  onChange={(e) => {
+                    setUsePhoto(e.target.checked);
+                    try {
+                      localStorage.setItem('ugc.listingPhoto', e.target.checked ? '1' : '0');
+                    } catch {
+                      /* remembered only while the app runs */
+                    }
+                  }}
+                />{' '}
+                Use the listing photo as the product reference in Flow (products I promote)
+              </label>
             </div>
           </section>
 
@@ -182,7 +235,7 @@ export function AffiliateProducts(props: {
             ) : (
               <div data-testid="today">
                 {today.map((p) => (
-                  <ProductCard key={`${p.id}:${p.updatedAt}`} accountId={account.id} p={p} call={call} onNotice={setNotice} onCreateVideos={props.onCreateVideos} />
+                  <ProductCard key={`${p.id}:${p.updatedAt}`} accountId={account.id} p={p} call={call} onNotice={setNotice} onCreateVideos={props.onCreateVideos} onFill={fill} filling={filling} />
                 ))}
               </div>
             )}
@@ -195,7 +248,7 @@ export function AffiliateProducts(props: {
             ) : (
               <div data-testid="others">
                 {others.map((p) => (
-                  <ProductCard key={`${p.id}:${p.updatedAt}`} accountId={account.id} p={p} call={call} onNotice={setNotice} onCreateVideos={props.onCreateVideos} />
+                  <ProductCard key={`${p.id}:${p.updatedAt}`} accountId={account.id} p={p} call={call} onNotice={setNotice} onCreateVideos={props.onCreateVideos} onFill={fill} filling={filling} />
                 ))}
               </div>
             )}
@@ -206,7 +259,15 @@ export function AffiliateProducts(props: {
   );
 }
 
-function ProductCard(props: { accountId: string; p: AffiliateProduct; call: Call; onNotice: (n: Notice) => void; onCreateVideos: (id: string) => void }): React.JSX.Element {
+function ProductCard(props: {
+  accountId: string;
+  p: AffiliateProduct;
+  call: Call;
+  onNotice: (n: Notice) => void;
+  onCreateVideos: (id: string) => void;
+  onFill: (id: string) => Promise<boolean>;
+  filling: string | null;
+}): React.JSX.Element {
   const { p, accountId, call } = props;
   const [editing, setEditing] = useState(false);
   const [f, setF] = useState({
@@ -232,6 +293,7 @@ function ProductCard(props: { accountId: string; p: AffiliateProduct; call: Call
         <Badge tone={SHOWCASE[p.showcase].tone} testId="showcase-state" value={p.showcase}>
           {SHOWCASE[p.showcase].label}
         </Badge>
+        {p.imageAssetId && <Badge tone="ok">photo</Badge>}
         {p.eligibility !== 'unknown' && <Badge tone={p.eligibility === 'can_promote' ? 'ok' : 'bad'}>{p.eligibility === 'can_promote' ? 'Can promote' : 'Cannot promote'}</Badge>}
       </header>
       <div className="small" data-testid="product-summary">
@@ -294,7 +356,10 @@ function ProductCard(props: { accountId: string; p: AffiliateProduct; call: Call
         </div>
       )}
       <div className="actions">
-        <button type="button" className="primary" onClick={() => props.onCreateVideos(p.id)}>
+        <button type="button" className={p.facts.title ? '' : 'primary'} disabled={props.filling !== null} onClick={() => void props.onFill(p.id)}>
+          {props.filling === p.id ? 'Reading…' : 'Fill from TikTok'}
+        </button>
+        <button type="button" className={p.facts.title ? 'primary' : ''} onClick={() => props.onCreateVideos(p.id)}>
           Create videos
         </button>
         <button type="button" onClick={() => void call(bridge.selectAffiliateProduct(accountId, p.id, !p.selectedToday))}>

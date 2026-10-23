@@ -58,7 +58,7 @@ test('A2: plan → Clip A/B by hand → FFmpeg join → review → Affiliate Vid
     await expect(flowSelect.locator('option', { hasText: 'Synthetic Affiliate 01 (own session) · 1050 left' })).toHaveCount(1);
     await expect(flowSelect.locator('option', { hasText: 'Synthetic Flow Pool 01 (pool)' })).toHaveCount(1);
     await expect(flowSelect).toHaveValue('pool');
-    await ui.getByRole('button', { name: 'Generate 10 plans' }).click();
+    await ui.getByRole('button', { name: 'or plan 10 as drafts to review first' }).click();
     const plans = ui.locator('article.plan-card');
     await expect(plans).toHaveCount(10);
     const plan = ui.locator('article.plan-card[data-position="1"]');

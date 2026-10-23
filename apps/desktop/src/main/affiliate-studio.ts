@@ -61,7 +61,8 @@ export type AffiliateStudioErrorCode =
   | 'invalid_clip_file'
   | 'stitch_failed'
   | 'invalid_limits'
-  | 'invalid_reason';
+  | 'invalid_reason'
+  | 'nothing_to_send';
 
 export class AffiliateStudioError extends Error {
   constructor(
@@ -292,6 +293,13 @@ export class AffiliateStudioService {
     return { row, facts: JSON.parse(row.facts_json) as ProductFacts };
   }
 
+  /** The listing photo saved for this product (A3), if it still exists. */
+  #productPhoto(bundleId: string, productRowId: string): { id: string; name: string } | null {
+    const row = this.#db.prepare('SELECT image_asset_id FROM affiliate_products WHERE id = ? AND bundle_id = ?').get(productRowId, bundleId) as { image_asset_id: string | null } | undefined;
+    const asset = row?.image_asset_id ? this.#deps.assets(bundleId).find((a) => a.id === row.image_asset_id && a.kind === 'image') : undefined;
+    return asset ? { id: asset.id, name: asset.name } : null;
+  }
+
   #studioProduct(bundleId: string, productRowId: string): StudioProduct {
     const { row, facts } = this.#product(bundleId, productRowId);
     return {
@@ -315,7 +323,7 @@ export class AffiliateStudioService {
     const readiness = productReadiness(facts, row.listing_state);
     if (readiness.length > 0) throw new AffiliateStudioError('product_not_ready', readiness);
     const config = this.config(bundleId);
-    const hasRef = config.referenceAssetIds.length > 0;
+    const hasRef = config.referenceAssetIds.length > 0 || this.#productPhoto(bundleId, productRowId) !== null;
     const previous = (this.#db.prepare("SELECT axes_json FROM affiliate_videos WHERE product_row_id = ? AND status != 'rejected' ORDER BY created_at DESC LIMIT 60").all(productRowId) as Array<{ axes_json: string }>).map(
       (r) => {
         const { reactor: _r, ...axes } = JSON.parse(r.axes_json) as Record<string, string>;
@@ -445,6 +453,50 @@ export class AffiliateStudioService {
     }
     this.#db.prepare('UPDATE affiliate_videos SET status = ?, updated_at = ? WHERE id = ?').run(to[action]!, this.#iso(), videoId);
     if (action !== 'approve') this.#refreshFlags(v.batch_id);
+  }
+
+  /** Approves every draft plan of this product that has no blocking flag (A3). */
+  approveAll(bundleId: string, productRowId: string): { approved: number; blocked: number } {
+    this.#require(bundleId);
+    const drafts = this.#db
+      .prepare("SELECT id, flags_json FROM affiliate_videos WHERE bundle_id = ? AND product_row_id = ? AND status = 'draft' ORDER BY created_at, position")
+      .all(bundleId, productRowId) as Array<{ id: string; flags_json: string }>;
+    let approved = 0;
+    for (const d of drafts) {
+      if ((JSON.parse(d.flags_json) as PlanFlag[]).some((f) => BLOCKING_PLAN_FLAGS.includes(f))) continue;
+      this.#db.prepare("UPDATE affiliate_videos SET status = 'approved', updated_at = ? WHERE id = ?").run(this.#iso(), d.id);
+      approved++;
+    }
+    return { approved, blocked: drafts.length - approved };
+  }
+
+  /** One click (A3): plans the configured number of videos for this product and approves those without a blocking flag. */
+  makeVideos(bundleId: string, productRowId: string): { batchId: string; approved: number; blocked: number } {
+    const batchId = this.generate(bundleId, productRowId);
+    return { batchId, ...this.approveAll(bundleId, productRowId) };
+  }
+
+  /**
+   * The next clip to take to Flow (A3), in plan order: Clip A, then Clip B, of
+   * each approved video; unusable clips come back while attempts remain. Only
+   * one clip of a product is in Flow at a time, so each download is matched
+   * to the right clip.
+   */
+  nextClip(bundleId: string, productRowId: string): string {
+    this.#require(bundleId);
+    const inFlow = this.#db
+      .prepare("SELECT v.position AS position, c.slot AS slot FROM affiliate_clips c JOIN affiliate_videos v ON v.id = c.video_id WHERE v.bundle_id = ? AND v.product_row_id = ? AND c.status = 'in_flow' LIMIT 1")
+      .get(bundleId, productRowId) as { position: number; slot: string } | undefined;
+    if (inFlow) throw new AffiliateStudioError('nothing_to_send', ['clip_in_flow', `${inFlow.position}${inFlow.slot}`]);
+    const next = this.#db
+      .prepare(
+        `SELECT c.id AS id FROM affiliate_clips c JOIN affiliate_videos v ON v.id = c.video_id
+         WHERE v.bundle_id = ? AND v.product_row_id = ? AND v.status IN ('approved', 'producing') AND c.status IN ('waiting', 'unusable') AND c.attempts < ?
+         ORDER BY v.created_at, v.position, c.slot LIMIT 1`,
+      )
+      .get(bundleId, productRowId, this.limits(bundleId).maxClipAttempts) as { id: string } | undefined;
+    if (!next) throw new AffiliateStudioError('nothing_to_send', ['nothing_waiting']);
+    return next.id;
   }
 
   // ---- Clip production ----
@@ -741,7 +793,8 @@ export class AffiliateStudioService {
     const { A, B } = this.#clipsOf(r.id);
     const facts = JSON.parse(r.facts_json) as ProductFacts;
     const config = JSON.parse(r.config_json) as AffiliateCreativeConfig;
-    const refNames = this.#deps.assets(r.bundle_id).filter((a) => config.referenceAssetIds.includes(a.id)).map((a) => a.name);
+    const photo = this.#productPhoto(r.bundle_id, r.product_row_id);
+    const refNames = [...(photo ? [photo.name] : []), ...this.#deps.assets(r.bundle_id).filter((a) => config.referenceAssetIds.includes(a.id) && a.id !== photo?.id).map((a) => a.name)];
     const product = this.#db.prepare('SELECT showcase_state FROM affiliate_products WHERE id = ?').get(r.product_row_id) as { showcase_state: string } | undefined;
     const clipView = (c: ClipRow): ClipView => ({
       id: c.id,

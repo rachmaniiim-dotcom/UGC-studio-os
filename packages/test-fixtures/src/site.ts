@@ -31,6 +31,8 @@ export interface SyntheticSite {
   revokeToken(token: string): void;
   /** Makes the primary IP-diagnostic endpoint (/ip) fail, to exercise the backup (/ip-backup). */
   failPrimaryIp(fail: boolean): void;
+  /** The next product page (/view/product/<id>) shows a security check first; "#verify" (the owner) completes it. */
+  listingSecurityCheck(on: boolean): void;
   close(): Promise<void>;
 }
 
@@ -116,6 +118,7 @@ export async function startSyntheticSite(): Promise<SyntheticSite> {
   const deviceTokens = new Map<string, string>();
   let rotations = 0;
   let primaryIpFails = false;
+  let listingCheck = false;
   /** Client address per TCP connection, keyed by the connection's remote port. */
   const clientIps = new Map<number, string>();
   const requests: RecordedRequest[] = [];
@@ -143,7 +146,50 @@ export async function startSyntheticSite(): Promise<SyntheticSite> {
     });
     const user = token ? users.get(token) : undefined;
 
+    // Stand-in for a TikTok Shop product page: meta tags, embedded product JSON and visible text.
+    const listing = /^\/view\/product\/(\d{6,25})$/.exec(url.pathname);
+    if (listing) {
+      const id = listing[1]!;
+      if (listingCheck && !url.searchParams.has('verified')) {
+        return html(
+          res,
+          `<!doctype html><html><head><meta charset="utf-8"><title>Security Check</title></head><body><p>Drag the slider to verify you are human.</p><a id="verify" href="/view/product/${id}?verified=1">I'm human</a></body></html>`,
+        );
+      }
+      listingCheck = false;
+      const origin = `https://${req.headers.host ?? SYNTHETIC_HOST}`;
+      const data = {
+        loaderData: {
+          product: {
+            product_info: {
+              product_id: id,
+              product_base: {
+                title: 'Serum Glow Sintetis 30 ml',
+                desc_detail: JSON.stringify([
+                  { type: 'text', text: ['Manfaat:', '• Membantu mencerahkan kulit kusam', '• Tekstur ringan, cepat meresap', '• Isi 30 ml dengan pipet', 'PROMO gratis ongkir!'].join('\n') },
+                ]),
+                images: [{ url_list: [`${origin}/product-image.png`] }],
+                price: { real_price: 'Rp89.000' },
+              },
+              seller: { name: 'Toko Glow Sintetis' },
+            },
+          },
+        },
+      };
+      return html(
+        res,
+        `<!doctype html><html><head><meta charset="utf-8"><title>Serum Glow Sintetis 30 ml | TikTok Shop</title>
+<meta property="og:title" content="Serum Glow Sintetis 30 ml | TikTok Shop">
+<script id="__MODERN_ROUTER_DATA__" type="application/json">${JSON.stringify(data).replace(/</g, '\\u003c')}</script></head>
+<body><h1>Serum Glow Sintetis 30 ml</h1><p>Rp89.000</p><p>Toko Glow Sintetis</p></body></html>`,
+      );
+    }
     switch (url.pathname) {
+      case '/product-image.png':
+        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' });
+        return void res.end(
+          Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'),
+        );
       case '/':
         return html(res, PAGE(HOME_SCRIPT));
       case '/strict':
@@ -296,6 +342,9 @@ export async function startSyntheticSite(): Promise<SyntheticSite> {
     },
     failPrimaryIp(fail) {
       primaryIpFails = fail;
+    },
+    listingSecurityCheck(on) {
+      listingCheck = on;
     },
     close: () =>
       new Promise<void>((resolve, reject) => {

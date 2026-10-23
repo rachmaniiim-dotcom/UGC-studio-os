@@ -1,5 +1,6 @@
 import { BrowserWindow as Windows, clipboard, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, rm, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   DEFAULT_MAX_BYTES,
   bundleStatus,
@@ -27,6 +28,7 @@ import { AffiliateStudioError, type AffiliateStudioService } from './affiliate-s
 import { PoolError, type FlowPoolService } from './flow-pool.js';
 import { GrowthError, type GrowthService } from './growth.js';
 import { StudioError, type PromptStudioService } from './prompt-studio.js';
+import { downloadListingImage, readOpenListing } from './listing-reader.js';
 import type { GenerationJob, GenerationStore } from './generation-store.js';
 import type { VideoLibrary } from './library.js';
 import { SYNTHETIC_PLATFORM_ID } from './platforms.js';
@@ -93,6 +95,7 @@ export type IpcErrorCode =
   | 'showcase_action_not_allowed'
   | 'no_product_in_address'
   | 'no_research_window'
+  | 'listing_unreadable'
   | 'session_not_configured'
   | 'not_pool_account'
   | 'invalid_pool_settings'
@@ -114,6 +117,7 @@ export type IpcErrorCode =
   | 'stitch_failed'
   | 'invalid_limits'
   | 'invalid_reason'
+  | 'nothing_to_send'
   | 'internal_error';
 
 /** `details` carries sanitized issue codes (e.g. which field is invalid), never input values. */
@@ -364,7 +368,7 @@ export function registerIpc({
    * Opens a URL of a real platform in the account's window for that platform. In synthetic runs
    * the same path is opened on the platform's synthetic stand-in host instead.
    */
-  const openInAccount = async (bundleId: string, platformId: string, realUrl: string, label: string): Promise<void> => {
+  const openInAccount = async (bundleId: string, platformId: string, realUrl: string, label: string): Promise<BrowserWindow> => {
     const profile = bundleProfile(bundleId, platformId);
     const platform = platformOf(profile)!;
     let url = realUrl;
@@ -376,6 +380,7 @@ export function registerIpc({
     sessionOf(profile);
     const win = openSiteWindow(profile.partition, `${profile.label} — ${label}`, url, platform.navigationDomains, devTools, log);
     proxies?.watchWindow(win.webContents);
+    return win;
   };
 
   const studioError = (err: unknown): never => {
@@ -981,6 +986,37 @@ export function registerIpc({
       return aStudioCall(() => affiliateStudio.view(bundle.id, requireId(request, 'productRowId')));
     },
 
+    // A3: plans the day's videos for the product and approves the clean ones, in one click.
+    'astudio:make-videos': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId']);
+      const bundle = requireBundle(request);
+      const productRowId = requireId(request, 'productRowId');
+      return aStudioCall(() => ({ ...affiliateStudio.makeVideos(bundle.id, productRowId), view: affiliateStudio.view(bundle.id, productRowId) }));
+    },
+
+    'astudio:approve-all': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId']);
+      const bundle = requireBundle(request);
+      const productRowId = requireId(request, 'productRowId');
+      return aStudioCall(() => ({ ...affiliateStudio.approveAll(bundle.id, productRowId), view: affiliateStudio.view(bundle.id, productRowId) }));
+    },
+
+    // A3: the next clip in order goes to Flow (same checks as a single hand-off).
+    'astudio:send-next': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'flowBundleId']);
+      const bundle = requireBundle(request);
+      const productRowId = requireId(request, 'productRowId');
+      const flowBundleId = request['flowBundleId'] === null ? null : requireId(request, 'flowBundleId');
+      const clipId = aStudioCall(() => affiliateStudio.nextClip(bundle.id, productRowId));
+      const target = flowBundleId ?? poolCall(() => pool.pick()).id;
+      await requireNetworkReady(bundleProfile(target, 'google-flow'));
+      const { text, flowBundleId: used } = aStudioCall(() => affiliateStudio.handOff(bundle.id, clipId, target));
+      clipboard.writeText(text);
+      const profile = bundleProfile(used, 'google-flow');
+      await openInAccount(used, 'google-flow', platformOf(profile)!.pages['home']!, 'Flow');
+      return { clipId, view: aStudioCall(() => affiliateStudio.view(bundle.id, productRowId)) };
+    },
+
     'astudio:copy-clip': async (payload) => {
       const request = requireObject(payload, ['bundleId', 'clipId']);
       const bundle = requireBundle(request);
@@ -1171,6 +1207,36 @@ export function registerIpc({
       const { url } = affiliateCall(() => affiliate.productUrl(bundle.id, id));
       await openInAccount(bundle.id, 'tiktok', url, 'product');
       return { opened: true };
+    },
+
+    // A3: opens the product's listing in this account's TikTok window (its proxy, its login) and reads
+    // the title, shop, price, description, feature lines and, if asked, the main photo from that page.
+    // Nothing is clicked; a security check stays on screen for the owner, and reading resumes after it.
+    'affiliate:autofill': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'id', 'usePhoto']);
+      const bundle = requireBundle(request);
+      const id = requireId(request, 'id');
+      const usePhoto = request['usePhoto'] === true;
+      const { productId, url } = affiliateCall(() => affiliate.productUrl(bundle.id, id));
+      const profile = bundleProfile(bundle.id, 'tiktok');
+      const win = await openInAccount(bundle.id, 'tiktok', url, 'product');
+      const read = await readOpenListing(win, productId);
+      if (!read.ok) throw new IpcError('listing_unreadable', [read.issue]);
+      let imageAssetId: string | null = null;
+      if (usePhoto && read.value.imageUrl) {
+        const file = await downloadListingImage(sessionOf(profile), read.value.imageUrl, join(userData, 'tmp')).catch(() => null);
+        if (file) {
+          try {
+            imageAssetId = (await studio.addReference(bundle.id, file, true)).id;
+          } catch {
+            imageAssetId = null;
+          } finally {
+            await rm(file, { force: true });
+          }
+        }
+      }
+      affiliateCall(() => affiliate.applyListing(bundle.id, id, read.value, imageAssetId));
+      return { view: affiliate.view(bundle.id), found: read.found, features: read.value.features.length, photo: imageAssetId !== null };
     },
 
     // Assisted Showcase: opens TikTok's own Showcase page in this account's window, with the product

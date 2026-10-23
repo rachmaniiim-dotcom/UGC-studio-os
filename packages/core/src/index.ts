@@ -221,3 +221,12 @@ export {
   type ProbeStream,
   type StitchOptions,
 } from './affiliate/ffmpeg.js';
+export {
+  featuresFromDescription,
+  LISTING_SNAPSHOT_SCRIPT,
+  parseRupiah,
+  readListing,
+  type ListingFacts,
+  type ListingIssue,
+  type ListingSnapshot,
+} from './affiliate/listing.js';

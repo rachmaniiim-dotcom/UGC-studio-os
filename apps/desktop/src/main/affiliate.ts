@@ -59,6 +59,8 @@ export interface AffiliateProduct {
   readonly showcase: ShowcaseState;
   readonly showcaseMethod: 'assisted' | 'api' | null;
   readonly showcaseChangedAt: string | null;
+  /** The listing photo saved as a reference image for Flow (A3), if any. */
+  readonly imageAssetId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -88,6 +90,7 @@ interface Row {
   showcase_state: ShowcaseState;
   showcase_method: 'assisted' | 'api' | null;
   showcase_changed_at: string | null;
+  image_asset_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -208,6 +211,29 @@ export class AffiliateService {
     this.#touch(id, 'facts_json = ?', JSON.stringify(valid.value));
   }
 
+  /**
+   * Facts read from this product's own listing page (A3): title, shop, price,
+   * the description (kept in notes) and its feature lines. The page showed
+   * this exact product ID, so the listing counts as confirmed. Commission and
+   * reference videos the owner entered are kept.
+   */
+  applyListing(bundleId: string, id: string, listing: { title: string; shopName: string; priceIdr: number | null; description: string; features: readonly string[] }, imageAssetId: string | null): void {
+    this.#require(bundleId);
+    const row = this.#row(bundleId, id);
+    const current = JSON.parse(row.facts_json) as ProductFacts;
+    const valid = validateFacts({
+      ...current,
+      title: listing.title,
+      shopName: listing.shopName || current.shopName,
+      priceIdr: listing.priceIdr ?? current.priceIdr,
+      features: listing.features.length > 0 ? listing.features.slice(0, 20) : current.features,
+      notes: listing.description ? listing.description.slice(0, 1000) : current.notes,
+    });
+    if (!valid.ok) throw new AffiliateError('invalid_facts', valid.issues);
+    this.#touch(id, 'facts_json = ?, listing_state = ?, image_asset_id = COALESCE(?, image_asset_id)', JSON.stringify(valid.value), 'confirmed', imageAssetId);
+    this.#log.info('listing_read', { bundleId, productRow: id, features: valid.value.features.length, photo: imageAssetId !== null });
+  }
+
   setListing(bundleId: string, id: string, state: unknown): void {
     this.#require(bundleId);
     this.#row(bundleId, id);
@@ -263,6 +289,7 @@ export class AffiliateService {
         showcase: r.showcase_state,
         showcaseMethod: r.showcase_method,
         showcaseChangedAt: r.showcase_changed_at,
+        imageAssetId: r.image_asset_id ?? null,
         createdAt: r.created_at,
         updatedAt: r.updated_at,
       };

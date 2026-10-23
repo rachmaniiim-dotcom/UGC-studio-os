@@ -83,7 +83,7 @@ export const DEFAULT_AFFILIATE_CONFIG: AffiliateCreativeConfig = {
     'Photorealistic, natural daylight, authentic Indonesian everyday setting, handheld phone-camera feel, punchy fast pacing with quick cuts inside the clip, vivid but natural colours.',
   avoid:
     'No other brands or logos, no text overlays or subtitles, no price or discount claims, no medical or "guaranteed" claims, no fake reviews or testimonials, no distorted hands or product, no copyrighted music.',
-  continuity: 'mixed',
+  continuity: 'cut',
   count: 10,
   hashtags: ['#racuntiktok', '#tiktokshop', '#rekomendasi'],
   referenceAssetIds: [],
