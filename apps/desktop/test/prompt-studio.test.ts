@@ -168,7 +168,7 @@ describe('prompt studio (SQLite, synthetic)', () => {
     expect(studio.view(bundle.id).counts).toMatchObject({ generating: 1, video_ready: 0 });
 
     // Manual Flow download: the download handler claims the waiting prompt; a failed download keeps it waiting.
-    expect(studio.claimManualPrompt(bundle.id)).toEqual({ itemId: a!.id, targetBundleId: bundle.id });
+    expect(studio.claimManualPrompt(bundle.id)).toMatchObject({ itemId: a!.id, targetBundleId: bundle.id });
     const failed = jobs.create({ bundleId: bundle.id, source: 'manual_download', providerId: 'google-flow-manual', settings: null, promptItemId: a!.id });
     jobs.transition(failed.id, 'running');
     studio.jobEnded(jobs.transition(failed.id, 'failed', { errorCode: 'cancelled' }));

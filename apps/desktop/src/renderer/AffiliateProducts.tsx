@@ -46,7 +46,12 @@ function NoticeBox(props: { notice: Notice; testId: string }): React.JSX.Element
 
 type Call = (p: Promise<{ ok: true; data: AffiliateView } | { ok: false; error: { code: string; details?: string[] } }>) => Promise<boolean>;
 
-export function AffiliateProducts(props: { account: Account | null; onBack: () => Promise<void> }): React.JSX.Element {
+export function AffiliateProducts(props: {
+  account: Account | null;
+  onBack: () => Promise<void>;
+  onCreateVideos: (productRowId: string) => void;
+  onLibrary: () => void;
+}): React.JSX.Element {
   const { account } = props;
   const [view, setView] = useState<AffiliateView | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
@@ -90,6 +95,9 @@ export function AffiliateProducts(props: { account: Account | null; onBack: () =
             ← All accounts
           </button>
           <h2>Products · {account.displayName}</h2>
+          <button type="button" onClick={props.onLibrary}>
+            Video library
+          </button>
           <p className="muted small">
             Pick today’s products, check each exact TikTok listing, and add them to this account’s Showcase with TikTok’s own controls. Pages open in this account’s
             windows (its proxy and session). Only product IDs are stored; no Kalodata data.
@@ -174,7 +182,7 @@ export function AffiliateProducts(props: { account: Account | null; onBack: () =
             ) : (
               <div data-testid="today">
                 {today.map((p) => (
-                  <ProductCard key={`${p.id}:${p.updatedAt}`} accountId={account.id} p={p} call={call} onNotice={setNotice} />
+                  <ProductCard key={`${p.id}:${p.updatedAt}`} accountId={account.id} p={p} call={call} onNotice={setNotice} onCreateVideos={props.onCreateVideos} />
                 ))}
               </div>
             )}
@@ -187,7 +195,7 @@ export function AffiliateProducts(props: { account: Account | null; onBack: () =
             ) : (
               <div data-testid="others">
                 {others.map((p) => (
-                  <ProductCard key={`${p.id}:${p.updatedAt}`} accountId={account.id} p={p} call={call} onNotice={setNotice} />
+                  <ProductCard key={`${p.id}:${p.updatedAt}`} accountId={account.id} p={p} call={call} onNotice={setNotice} onCreateVideos={props.onCreateVideos} />
                 ))}
               </div>
             )}
@@ -198,7 +206,7 @@ export function AffiliateProducts(props: { account: Account | null; onBack: () =
   );
 }
 
-function ProductCard(props: { accountId: string; p: AffiliateProduct; call: Call; onNotice: (n: Notice) => void }): React.JSX.Element {
+function ProductCard(props: { accountId: string; p: AffiliateProduct; call: Call; onNotice: (n: Notice) => void; onCreateVideos: (id: string) => void }): React.JSX.Element {
   const { p, accountId, call } = props;
   const [editing, setEditing] = useState(false);
   const [f, setF] = useState({
@@ -286,6 +294,9 @@ function ProductCard(props: { accountId: string; p: AffiliateProduct; call: Call
         </div>
       )}
       <div className="actions">
+        <button type="button" className="primary" onClick={() => props.onCreateVideos(p.id)}>
+          Create videos
+        </button>
         <button type="button" onClick={() => void call(bridge.selectAffiliateProduct(accountId, p.id, !p.selectedToday))}>
           {p.selectedToday ? 'Remove from today' : 'Select for today'}
         </button>

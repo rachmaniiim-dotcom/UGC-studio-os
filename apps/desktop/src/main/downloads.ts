@@ -41,7 +41,7 @@ export function attachFlowDownloads(
      * and saved into the prompt's account library, which differs from this session's account for a
      * Flow pool account (F0).
      */
-    claimPrompt?: (flowBundleId: string) => { itemId: string; targetBundleId: string } | null;
+    claimPrompt?: (flowBundleId: string) => { itemId?: string; clipId?: string; targetBundleId: string } | null;
     onEnded?: (job: GenerationJob) => void;
   },
 ): void {
@@ -62,6 +62,7 @@ export function attachFlowDownloads(
       providerId: 'google-flow-manual',
       settings: null,
       promptItemId: claim?.itemId ?? null,
+      affiliateClipId: claim?.clipId ?? null,
       flowBundleId: bundleId,
     });
     deps.jobs.transition(job.id, 'running', { code: 'download_started' });

@@ -506,17 +506,17 @@ export class PromptStudioService {
   }
 
   /** For the Flow download handler: the oldest prompt the owner took to Flow by hand and is still waiting for its video. */
-  claimManualPrompt(flowBundleId: string): { itemId: string; targetBundleId: string } | null {
+  claimManualPrompt(flowBundleId: string): { itemId: string; targetBundleId: string; since: string } | null {
     // A prompt taken to a Flow pool account is claimed by that account's window; otherwise by the account's own Flow window.
     const row = this.#db
       .prepare(
-        `SELECT id, bundle_id FROM prompt_items i WHERE status = 'generating' AND handoff = 'manual'
+        `SELECT id, bundle_id, updated_at FROM prompt_items i WHERE status = 'generating' AND handoff = 'manual'
          AND (flow_bundle_id = ? OR (bundle_id = ? AND flow_bundle_id IS NULL))
          AND NOT EXISTS (SELECT 1 FROM generation_jobs j WHERE j.prompt_item_id = i.id AND j.state IN ('pending', 'running'))
          ORDER BY updated_at, rowid LIMIT 1`,
       )
-      .get(flowBundleId, flowBundleId) as { id: string; bundle_id: string } | undefined;
-    return row ? { itemId: row.id, targetBundleId: row.bundle_id } : null;
+      .get(flowBundleId, flowBundleId) as { id: string; bundle_id: string; updated_at: string } | undefined;
+    return row ? { itemId: row.id, targetBundleId: row.bundle_id, since: row.updated_at } : null;
   }
 
   /** Takes a queued prompt to a Flow pool account's window (F0); its download comes back to this account. */
@@ -563,6 +563,11 @@ export class PromptStudioService {
 
   // ---- Reference files (local only; never sent to a concept provider) ----
 
+  /** Reference files of an account (Ternak Akun templates or Affiliate product images). */
+  assets(bundleId: string): ReferenceAsset[] {
+    return this.#assets(bundleId);
+  }
+
   #assets(bundleId: string): ReferenceAsset[] {
     return (
       this.#db.prepare('SELECT id, name, kind, bytes, file, created_at FROM reference_assets WHERE bundle_id = ? ORDER BY created_at, rowid').all(bundleId) as Array<{
@@ -586,7 +591,9 @@ export class PromptStudioService {
 
   /** Copies a file the owner picked (and confirmed they have rights to) into the account's reference folder. */
   async addReference(bundleId: string, sourcePath: string, rightsConfirmed: boolean): Promise<ReferenceAsset> {
-    this.#requireGrowth(bundleId);
+    // Ternak Akun template references, or Affiliate product images (A2).
+    const mode = this.#deps.bundles.get(bundleId)?.mode;
+    if (mode !== 'account_growth' && mode !== 'affiliate_ugc') throw new StudioError('not_growth_account');
     if (rightsConfirmed !== true) throw new StudioError('rights_not_confirmed');
     const ext = extname(sourcePath).toLowerCase();
     const kind = REFERENCE_TYPES[ext];

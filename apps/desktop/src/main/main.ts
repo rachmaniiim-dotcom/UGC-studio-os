@@ -9,6 +9,8 @@ import { attachFlowDownloads } from './downloads.js';
 import { GenerationService } from './generation.js';
 import { GenerationStore } from './generation-store.js';
 import { AffiliateService } from './affiliate.js';
+import { AffiliateStudioService } from './affiliate-studio.js';
+import { FfmpegRunner } from './ffmpeg.js';
 import { FlowPoolService } from './flow-pool.js';
 import { GrowthService } from './growth.js';
 import { PromptStudioService } from './prompt-studio.js';
@@ -116,7 +118,8 @@ if (securityCheck) {
       onJobEnded: (job) => studio.jobEnded(job),
     });
     // Flow session pool (F0): credit ledger for Flow-only Google accounts.
-    const pool = new FlowPoolService(meta, bundles, log, (bundleId) => sessions!.list().find((p) => p.bundleId === bundleId && p.platformId === 'google-flow')?.id ?? null);
+    const flowSessionOf = (bundleId: string): string | null => sessions!.list().find((p) => p.bundleId === bundleId && p.platformId === 'google-flow')?.id ?? null;
+    const pool = new FlowPoolService(meta, bundles, log, flowSessionOf);
     // Prompt Studio (T1): deterministic template engine, no AI service and no network.
     const studio: PromptStudioService = new PromptStudioService({
       meta,
@@ -127,6 +130,20 @@ if (securityCheck) {
       log,
       userData,
       sensitiveValues: () => bundles.list().flatMap((b) => [b.id, b.displayName, b.proxy?.host ?? '', b.proxy?.observedIp ?? '']),
+    });
+    // Affiliate Creative Studio (A2): clips produced by hand in Flow, joined with the locally installed FFmpeg.
+    const ffmpeg = await FfmpegRunner.locate();
+    log.info('ffmpeg_located', { available: ffmpeg !== null });
+    const affiliateStudio = new AffiliateStudioService({
+      meta,
+      bundles,
+      jobs,
+      library,
+      pool,
+      log,
+      assets: (bundleId) => studio.assets(bundleId),
+      ffmpeg: () => ffmpeg,
+      flowSessionOf,
     });
     generation.reconcile();
     studio.reconcile();
@@ -139,17 +156,31 @@ if (securityCheck) {
           jobs,
           log,
           synthetic: config.synthetic,
-          claimPrompt: (bundleId) => studio.claimManualPrompt(bundleId),
+          // The oldest prompt or clip taken to this Flow window gets the download.
+          claimPrompt: (bundleId) => {
+            const prompt = studio.claimManualPrompt(bundleId);
+            const clip = affiliateStudio.claimForFlow(bundleId);
+            if (prompt && (!clip || prompt.since <= clip.since)) return { itemId: prompt.itemId, targetBundleId: prompt.targetBundleId };
+            return clip ? { clipId: clip.clipId, targetBundleId: clip.targetBundleId } : null;
+          },
           onEnded: (job) => {
             studio.jobEnded(job);
-            pool.recordDownload(job);
+            const credits = pool.recordDownload(job);
+            void affiliateStudio.jobEnded(job, credits).catch((err: unknown) => log.error('affiliate_clip_hook_error', { jobId: job.id, err }));
           },
         });
       }
     };
     for (const p of sessions.list()) attachDownloads(p);
 
-    serveAppProtocol(join(here, '..', 'renderer'));
+    // The UI, plus read-only playback of this app's own library files (clips and finished videos).
+    serveAppProtocol(join(here, '..', 'renderer'), (kind, id) => {
+      if (kind === 'job') {
+        const job = jobs.get(id);
+        return job?.state === 'completed' && job.videoFile ? library.absolute(job.videoFile) : null;
+      }
+      return affiliateStudio.finalPath(id);
+    });
     registerIpc({
       config,
       sessions,
@@ -168,6 +199,7 @@ if (securityCheck) {
       studio,
       affiliate: new AffiliateService(meta, bundles, log),
       pool,
+      affiliateStudio,
     });
     mainWindow = createMainWindow(join(here, '..', 'preload', 'preload.cjs'), config.synthetic, log);
     mainWindow.on('closed', () => (mainWindow = null));

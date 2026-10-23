@@ -22,6 +22,8 @@ export interface GenerationJob {
   readonly promptItemId: string | null;
   /** The account whose Google Flow session produced it (a Flow pool account, or the account itself). */
   readonly flowBundleId: string | null;
+  /** The affiliate clip (A2) this file is, if any. */
+  readonly affiliateClipId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -48,6 +50,7 @@ interface JobRow {
   video_sha256: string | null;
   prompt_item_id: string | null;
   flow_bundle_id: string | null;
+  affiliate_clip_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -67,6 +70,7 @@ const toJob = (r: JobRow): GenerationJob => ({
   videoSha256: r.video_sha256,
   promptItemId: r.prompt_item_id ?? null,
   flowBundleId: r.flow_bundle_id ?? null,
+  affiliateClipId: r.affiliate_clip_id ?? null,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
@@ -109,12 +113,13 @@ export class GenerationStore {
     settings: VideoSettings | null;
     promptItemId?: string | null;
     flowBundleId?: string | null;
+    affiliateClipId?: string | null;
   }): GenerationJob {
     const db = this.#require();
     const id = randomUUID();
     const now = new Date().toISOString();
     db.prepare(
-      'INSERT INTO generation_jobs (id, bundle_id, source, provider_id, state, settings_json, needs_user, prompt_item_id, flow_bundle_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)',
+      'INSERT INTO generation_jobs (id, bundle_id, source, provider_id, state, settings_json, needs_user, prompt_item_id, flow_bundle_id, affiliate_clip_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)',
     ).run(
       id,
       input.bundleId,
@@ -124,6 +129,7 @@ export class GenerationStore {
       input.settings ? JSON.stringify(input.settings) : null,
       input.promptItemId ?? null,
       input.flowBundleId ?? null,
+      input.affiliateClipId ?? null,
       now,
       now,
     );

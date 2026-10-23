@@ -176,3 +176,13 @@ label.inline { display: inline-flex; gap: 6px; align-items: center; }
 input.target.wide-target { width: 80px; }
 .pool input.target { width: 56px; }
 .pool input.target.wide-target { width: 80px; }
+.plan-card, .library-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+.clip-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.clip-columns .wide { grid-column: span 2; }
+.clip-columns.production { margin-top: 8px; }
+.clip-card { border: 1px dashed var(--border); border-radius: 8px; padding: 8px; }
+.final-box { display: flex; gap: 12px; align-items: flex-start; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+video.player { width: 180px; max-height: 320px; background: #000; border-radius: 6px; display: block; margin: 6px 0; }
+.library-media { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 6px; }
+details.settings > summary { cursor: pointer; }
+.astudio select { width: auto; }

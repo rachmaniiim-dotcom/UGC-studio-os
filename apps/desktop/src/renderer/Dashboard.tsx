@@ -1,7 +1,7 @@
 import { ACCOUNT_STATUS, MODE_LABELS, SESSION_STATUS, type Account } from './bridge.js';
 import { Badge } from './Badge.js';
 
-export function Dashboard(props: { accounts: Account[]; onAdd: () => void; onEdit: (id: string) => void; onGrowth: (id: string) => void; onStudio: (id: string) => void; onBoard: () => void; onProducts: (id: string) => void; onPool: () => void }): React.JSX.Element {
+export function Dashboard(props: { accounts: Account[]; onAdd: () => void; onEdit: (id: string) => void; onGrowth: (id: string) => void; onStudio: (id: string) => void; onBoard: () => void; onProducts: (id: string) => void; onPool: () => void; onLibrary: (id: string) => void }): React.JSX.Element {
   const { accounts } = props;
   const counts = {
     total: accounts.length,
@@ -96,9 +96,14 @@ export function Dashboard(props: { accounts: Account[]; onAdd: () => void; onEdi
                     Open
                   </button>
                   {a.mode === 'affiliate_ugc' && (
-                    <button type="button" onClick={() => props.onProducts(a.id)}>
-                      Products
-                    </button>
+                    <>
+                      <button type="button" onClick={() => props.onProducts(a.id)}>
+                        Products
+                      </button>
+                      <button type="button" onClick={() => props.onLibrary(a.id)}>
+                        Video library
+                      </button>
+                    </>
                   )}
                   {a.mode === 'account_growth' && (
                     <>

@@ -23,6 +23,7 @@ import { replaceCookies, type LoadResult } from './electron-cookies.js';
 import { cookieEncryptionFuseEnabled } from './fuses.js';
 import { GenerationError, type GenerationService } from './generation.js';
 import { AffiliateError, type AffiliateService } from './affiliate.js';
+import { AffiliateStudioError, type AffiliateStudioService } from './affiliate-studio.js';
 import { PoolError, type FlowPoolService } from './flow-pool.js';
 import { GrowthError, type GrowthService } from './growth.js';
 import { StudioError, type PromptStudioService } from './prompt-studio.js';
@@ -97,6 +98,22 @@ export type IpcErrorCode =
   | 'invalid_pool_settings'
   | 'invalid_credit_balance'
   | 'no_pool_account_available'
+  | 'flow_budget_exhausted'
+  | 'product_not_ready'
+  | 'invalid_creative_config'
+  | 'unknown_clip'
+  | 'invalid_plan_edit'
+  | 'plan_blocked'
+  | 'plan_action_not_allowed'
+  | 'clip_action_not_allowed'
+  | 'attempt_limit_reached'
+  | 'product_daily_limit_reached'
+  | 'not_a_flow_account'
+  | 'ffmpeg_missing'
+  | 'invalid_clip_file'
+  | 'stitch_failed'
+  | 'invalid_limits'
+  | 'invalid_reason'
   | 'internal_error';
 
 /** `details` carries sanitized issue codes (e.g. which field is invalid), never input values. */
@@ -131,6 +148,7 @@ export interface IpcDeps {
   readonly studio: PromptStudioService;
   readonly affiliate: AffiliateService;
   readonly pool: FlowPoolService;
+  readonly affiliateStudio: AffiliateStudioService;
 }
 
 /** What the UI may know about a platform. */
@@ -227,6 +245,7 @@ export function registerIpc({
   studio,
   affiliate,
   pool,
+  affiliateStudio,
 }: IpcDeps): void {
   const devTools = config.synthetic;
   const platformOf = (profile: PocProfile): PlatformDefinition | undefined => platforms.get(profile.platformId);
@@ -297,6 +316,24 @@ export function registerIpc({
       return await run();
     } catch (err) {
       if (err instanceof ProxyError) throw new IpcError(err.code as IpcErrorCode, err.details);
+      throw err;
+    }
+  };
+
+  const aStudioCall = <T>(run: () => T): T => {
+    try {
+      return run();
+    } catch (err) {
+      if (err instanceof AffiliateStudioError) throw new IpcError(err.code as IpcErrorCode, err.details);
+      if (err instanceof PoolError) throw new IpcError(err.code, err.details);
+      throw err;
+    }
+  };
+  const aStudioCallAsync = async <T>(run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (err) {
+      if (err instanceof AffiliateStudioError) throw new IpcError(err.code as IpcErrorCode, err.details);
       throw err;
     }
   };
@@ -835,6 +872,9 @@ export function registerIpc({
 
     'pool:list': async () => poolCall(() => pool.list()),
 
+    // Accounts' own Flow sessions that have used credits (next to the pool).
+    'pool:others': async () => poolCall(() => pool.others()),
+
     'pool:save-settings': async (payload) => {
       const request = requireObject(payload, ['bundleId', 'settings']);
       const bundle = requireBundle(request);
@@ -867,6 +907,177 @@ export function registerIpc({
       clipboard.writeText(text);
       await openInAccount(target.id, 'google-flow', platformOf(profile)!.pages['home']!, 'Flow');
       return { poolId: target.id, view: studio.view(bundle.id) };
+    },
+
+    // ---- Affiliate Creative Studio (A2): Clip A/B plans, manual Flow clips, FFmpeg stitching, review ----
+
+    'astudio:view': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId']);
+      const bundle = requireBundle(request);
+      return aStudioCall(() => affiliateStudio.view(bundle.id, requireId(request, 'productRowId')));
+    },
+
+    'astudio:save-config': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'config']);
+      const bundle = requireBundle(request);
+      return aStudioCall(() => {
+        affiliateStudio.saveConfig(bundle.id, request['config']);
+        return affiliateStudio.view(bundle.id, requireId(request, 'productRowId'));
+      });
+    },
+
+    'astudio:set-limits': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'limits']);
+      const bundle = requireBundle(request);
+      return aStudioCall(() => {
+        affiliateStudio.setLimits(bundle.id, request['limits']);
+        return affiliateStudio.view(bundle.id, requireId(request, 'productRowId'));
+      });
+    },
+
+    'astudio:generate': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId']);
+      const bundle = requireBundle(request);
+      const productRowId = requireId(request, 'productRowId');
+      return aStudioCall(() => {
+        const batchId = affiliateStudio.generate(bundle.id, productRowId);
+        return { batchId, view: affiliateStudio.view(bundle.id, productRowId) };
+      });
+    },
+
+    'astudio:update-plan': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'videoId', 'edit']);
+      const bundle = requireBundle(request);
+      return aStudioCall(() => {
+        affiliateStudio.updatePlan(bundle.id, requireId(request, 'videoId'), request['edit']);
+        return affiliateStudio.view(bundle.id, requireId(request, 'productRowId'));
+      });
+    },
+
+    'astudio:plan-action': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'videoId', 'action']);
+      const bundle = requireBundle(request);
+      const action = request['action'];
+      if (action !== 'approve' && action !== 'reject' && action !== 'reopen') throw new IpcError('invalid_request');
+      return aStudioCall(() => {
+        affiliateStudio.planAction(bundle.id, requireId(request, 'videoId'), action);
+        return affiliateStudio.view(bundle.id, requireId(request, 'productRowId'));
+      });
+    },
+
+    // Takes a clip to a Flow account (pool by credits, or a named Flow account): prompt on the
+    // clipboard, that account's Flow window opened behind its own proxy. Generation is the owner's.
+    'astudio:hand-off': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'clipId', 'flowBundleId']);
+      const bundle = requireBundle(request);
+      const clipId = requireId(request, 'clipId');
+      const flowBundleId = request['flowBundleId'] === null ? null : requireId(request, 'flowBundleId');
+      const target = flowBundleId ?? poolCall(() => pool.pick()).id;
+      await requireNetworkReady(bundleProfile(target, 'google-flow'));
+      const { text, flowBundleId: used } = aStudioCall(() => affiliateStudio.handOff(bundle.id, clipId, target));
+      clipboard.writeText(text);
+      const profile = bundleProfile(used, 'google-flow');
+      await openInAccount(used, 'google-flow', platformOf(profile)!.pages['home']!, 'Flow');
+      return aStudioCall(() => affiliateStudio.view(bundle.id, requireId(request, 'productRowId')));
+    },
+
+    'astudio:copy-clip': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'clipId']);
+      const bundle = requireBundle(request);
+      return aStudioCall(() => {
+        clipboard.writeText(affiliateStudio.clipText(bundle.id, requireId(request, 'clipId')));
+        return { copied: true };
+      });
+    },
+
+    'astudio:clip-failed': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'clipId', 'reason']);
+      const bundle = requireBundle(request);
+      if (typeof request['reason'] !== 'string') throw new IpcError('invalid_request');
+      return aStudioCall(() => {
+        affiliateStudio.clipFailed(bundle.id, requireId(request, 'clipId'), request['reason'] as string);
+        return affiliateStudio.view(bundle.id, requireId(request, 'productRowId'));
+      });
+    },
+
+    'astudio:mark-unusable': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'clipId', 'reason']);
+      const bundle = requireBundle(request);
+      if (typeof request['reason'] !== 'string') throw new IpcError('invalid_request');
+      return aStudioCall(() => {
+        affiliateStudio.markUnusable(bundle.id, requireId(request, 'clipId'), request['reason'] as string);
+        return affiliateStudio.view(bundle.id, requireId(request, 'productRowId'));
+      });
+    },
+
+    // The main process picks the clip file (MP4); it is validated and copied into the account library.
+    'astudio:import-clip': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'clipId']);
+      const bundle = requireBundle(request);
+      const clipId = requireId(request, 'clipId');
+      const win = mainWindow();
+      const options = { title: 'Import a clip downloaded from Google Flow', properties: ['openFile' as const], filters: [{ name: 'MP4 video', extensions: ['mp4'] }] };
+      const pick = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const file = pick.filePaths[0];
+      if (pick.canceled || !file) return { canceled: true };
+      await aStudioCallAsync(() => affiliateStudio.importClip(bundle.id, clipId, file));
+      return { canceled: false, view: aStudioCall(() => affiliateStudio.view(bundle.id, requireId(request, 'productRowId'))) };
+    },
+
+    'astudio:export-frame': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'clipId']);
+      const bundle = requireBundle(request);
+      const png = await aStudioCallAsync(() => affiliateStudio.exportLastFrame(bundle.id, requireId(request, 'clipId')));
+      shell.showItemInFolder(png);
+      return { exported: true };
+    },
+
+    'astudio:stitch': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'videoId']);
+      const bundle = requireBundle(request);
+      await aStudioCallAsync(() => affiliateStudio.stitch(bundle.id, requireId(request, 'videoId')));
+      return aStudioCall(() => affiliateStudio.view(bundle.id, requireId(request, 'productRowId')));
+    },
+
+    'astudio:review': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'videoId', 'decision']);
+      const bundle = requireBundle(request);
+      const d = request['decision'] as Record<string, unknown> | null;
+      if (typeof d !== 'object' || d === null || typeof d['approve'] !== 'boolean') throw new IpcError('invalid_request');
+      const decision = d['approve'] ? { approve: true as const } : { approve: false as const, reason: String(d['reason']), redo: String(d['redo']) as 'A' | 'B' | 'both' };
+      return aStudioCall(() => {
+        affiliateStudio.review(bundle.id, requireId(request, 'videoId'), decision);
+        return affiliateStudio.view(bundle.id, requireId(request, 'productRowId'));
+      });
+    },
+
+    'astudio:library': async (payload) => {
+      const bundle = requireBundle(requireObject(payload, ['bundleId']));
+      return aStudioCall(() => affiliateStudio.library(bundle.id));
+    },
+
+    'astudio:reveal-final': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'videoId']);
+      requireBundle(request);
+      const path = affiliateStudio.finalPath(requireId(request, 'videoId'));
+      if (!path) throw new IpcError('unknown_video');
+      shell.showItemInFolder(path);
+      return { shown: true };
+    },
+
+    // Product reference image (rights confirmed by the owner), kept locally; uploaded in Flow by hand.
+    'astudio:add-image': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'rightsConfirmed']);
+      const bundle = requireBundle(request);
+      if (request['rightsConfirmed'] !== true) throw new IpcError('rights_not_confirmed');
+      if (bundle.mode !== 'affiliate_ugc') throw new IpcError('not_affiliate_account');
+      const win = mainWindow();
+      const options = { title: 'Add a product image you have the rights to use', properties: ['openFile' as const], filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp'] }] };
+      const pick = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const file = pick.filePaths[0];
+      if (pick.canceled || !file) return { canceled: true };
+      const asset = await studioCallAsync(() => studio.addReference(bundle.id, file, true));
+      return { canceled: false, assetId: asset.id };
     },
 
     // ---- Affiliate Products (A1): product IDs, today's selection, assisted Showcase ----

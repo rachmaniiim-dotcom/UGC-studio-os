@@ -5,12 +5,14 @@ import { Dashboard } from './Dashboard.js';
 import { GrowthIntelligence } from './GrowthIntelligence.js';
 import { AffiliateProducts } from './AffiliateProducts.js';
 import { FlowPool } from './FlowPool.js';
+import { AffiliateLibrary } from './AffiliateLibrary.js';
+import { AffiliateStudio } from './AffiliateStudio.js';
 import { ProductionBoard } from './ProductionBoard.js';
 import { PromptStudio } from './PromptStudio.js';
 import { LegacyProfiles } from './LegacyProfiles.js';
 
 // `visit` keeps the editor mounted while a new draft gets its id (so its confirmations stay visible).
-type View = { kind: 'dashboard' } | { kind: 'editor'; accountId: string | null; visit: number } | { kind: 'growth'; accountId: string } | { kind: 'studio'; accountId: string } | { kind: 'board' } | { kind: 'products'; accountId: string } | { kind: 'pool' };
+type View = { kind: 'dashboard' } | { kind: 'editor'; accountId: string | null; visit: number } | { kind: 'growth'; accountId: string } | { kind: 'studio'; accountId: string } | { kind: 'board' } | { kind: 'products'; accountId: string } | { kind: 'pool' } | { kind: 'astudio'; accountId: string; productRowId: string } | { kind: 'alibrary'; accountId: string };
 
 export function App(): React.JSX.Element {
   const [view, setView] = useState<View>({ kind: 'dashboard' });
@@ -64,9 +66,26 @@ export function App(): React.JSX.Element {
               onBoard={() => setView({ kind: 'board' })}
               onProducts={(id) => setView({ kind: 'products', accountId: id })}
               onPool={() => setView({ kind: 'pool' })}
+              onLibrary={(id) => setView({ kind: 'alibrary', accountId: id })}
             />
             {legacy && <LegacyProfiles platform={legacy.platform} profiles={legacy.profiles} onChanged={refresh} />}
           </>
+        ) : view.kind === 'astudio' ? (
+          <AffiliateStudio
+            account={accounts.find((a) => a.id === view.accountId) ?? null}
+            productRowId={view.productRowId}
+            onBack={async () => setView({ kind: 'products', accountId: view.accountId })}
+            onLibrary={() => setView({ kind: 'alibrary', accountId: view.accountId })}
+          />
+        ) : view.kind === 'alibrary' ? (
+          <AffiliateLibrary
+            account={accounts.find((a) => a.id === view.accountId) ?? null}
+            onBack={async () => {
+              await refresh();
+              setView({ kind: 'dashboard' });
+            }}
+            onOpenProduct={(productRowId) => setView({ kind: 'astudio', accountId: view.accountId, productRowId })}
+          />
         ) : view.kind === 'pool' ? (
           <FlowPool
             onBack={async () => {
@@ -78,6 +97,8 @@ export function App(): React.JSX.Element {
         ) : view.kind === 'products' ? (
           <AffiliateProducts
             account={accounts.find((a) => a.id === view.accountId) ?? null}
+            onCreateVideos={(productRowId) => setView({ kind: 'astudio', accountId: view.accountId, productRowId })}
+            onLibrary={() => setView({ kind: 'alibrary', accountId: view.accountId })}
             onBack={async () => {
               await refresh();
               setView({ kind: 'dashboard' });

@@ -336,6 +336,69 @@ export const MIGRATIONS: readonly Migration[] = [
    ALTER TABLE generation_jobs ADD COLUMN flow_bundle_id TEXT;
    ALTER TABLE prompt_items ADD COLUMN flow_bundle_id TEXT;`,
   },
+  // A2 (Affiliate Creative Studio): finished-video plans (Clip A + Clip B), their clips, a separate
+  // log of attempts / failures / unusable outputs / approvals, credit limits per Flow account, and
+  // per-account production limits.
+  `CREATE TABLE affiliate_videos (
+     id TEXT PRIMARY KEY,
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     product_row_id TEXT NOT NULL REFERENCES affiliate_products(id),
+     product_id TEXT NOT NULL,
+     batch_id TEXT NOT NULL,
+     position INTEGER NOT NULL,
+     template_key TEXT NOT NULL,
+     template_version INTEGER NOT NULL,
+     config_json TEXT NOT NULL,
+     facts_json TEXT NOT NULL,
+     has_reference INTEGER NOT NULL DEFAULT 0,
+     continuity TEXT NOT NULL CHECK (continuity IN ('seamless', 'cut')),
+     axes_json TEXT NOT NULL,
+     clip_a_json TEXT NOT NULL,
+     clip_b_json TEXT NOT NULL,
+     caption TEXT NOT NULL,
+     edited INTEGER NOT NULL DEFAULT 0,
+     flags_json TEXT NOT NULL DEFAULT '[]',
+     duplicates_json TEXT NOT NULL DEFAULT '[]',
+     status TEXT NOT NULL CHECK (status IN ('draft', 'approved', 'rejected', 'producing', 'stitching', 'review', 'final_approved')),
+     final_file TEXT,
+     final_meta_json TEXT,
+     final_sha256 TEXT,
+     review_note TEXT,
+     last_error TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     UNIQUE (batch_id, position)
+   );
+   CREATE TABLE affiliate_clips (
+     id TEXT PRIMARY KEY,
+     video_id TEXT NOT NULL REFERENCES affiliate_videos(id),
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     slot TEXT NOT NULL CHECK (slot IN ('A', 'B')),
+     status TEXT NOT NULL CHECK (status IN ('waiting', 'in_flow', 'received', 'unusable', 'approved')),
+     flow_bundle_id TEXT,
+     job_id TEXT,
+     attempts INTEGER NOT NULL DEFAULT 0,
+     credits INTEGER NOT NULL DEFAULT 0,
+     last_reason TEXT,
+     updated_at TEXT NOT NULL,
+     UNIQUE (video_id, slot)
+   );
+   CREATE TABLE production_events (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     product_id TEXT NOT NULL,
+     video_id TEXT NOT NULL,
+     clip_id TEXT,
+     flow_bundle_id TEXT,
+     at TEXT NOT NULL,
+     kind TEXT NOT NULL CHECK (kind IN ('attempt', 'generation_failed', 'unusable_output', 'clip_approved', 'stitch_failed', 'final_approved', 'final_rejected')),
+     reason TEXT,
+     credits INTEGER NOT NULL DEFAULT 0
+   );
+   ALTER TABLE generation_jobs ADD COLUMN affiliate_clip_id TEXT;
+   ALTER TABLE flow_pool_settings ADD COLUMN daily_credit_limit INTEGER;
+   ALTER TABLE production_targets ADD COLUMN max_clip_attempts INTEGER;
+   ALTER TABLE production_targets ADD COLUMN daily_videos_per_product INTEGER;`,
 ];
 
 export class MetadataDb {

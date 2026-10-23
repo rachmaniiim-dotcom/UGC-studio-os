@@ -11,11 +11,13 @@ type Notice = { tone: 'ok' | 'bad'; text: string; fields?: string[] } | null;
 
 export function FlowPool(props: { onBack: () => Promise<void>; onEdit: (id: string) => void }): React.JSX.Element {
   const [rows, setRows] = useState<PoolAccount[] | null>(null);
+  const [others, setOthers] = useState<PoolAccount[]>([]);
   const [notice, setNotice] = useState<Notice>(null);
   const load = useCallback(async () => {
-    const r = await bridge.flowPool();
+    const [r, o] = await Promise.all([bridge.flowPool(), bridge.flowOthers()]);
     if (r.ok) setRows(r.data);
     else setNotice({ tone: 'bad', text: describeError(r.error.code).message });
+    if (o.ok) setOthers(o.data);
   }, []);
   useEffect(() => {
     void load();
@@ -74,32 +76,39 @@ export function FlowPool(props: { onBack: () => Promise<void>; onEdit: (id: stri
                 <th>Account</th>
                 <th>Credits left</th>
                 <th>Videos this period</th>
-                <th>Monthly / reset day / per video</th>
+                <th>Monthly / reset day / per video / daily limit</th>
                 <th>Correct balance</th>
                 <th aria-label="Actions" />
               </tr>
             </thead>
             <tbody>
-              {rows.map((a) => (
-                <PoolRow key={`${a.id}:${a.used}:${a.settings.monthlyCredits}`} a={a} onRows={setRows} onNotice={setNotice} onEdit={props.onEdit} />
+              {[...rows, ...others].map((a) => (
+                <PoolRow key={`${a.id}:${a.used}:${a.settings.monthlyCredits}:${a.settings.dailyCreditLimit}`} a={a} onReload={load} onNotice={setNotice} onEdit={props.onEdit} />
               ))}
             </tbody>
           </table>
+          <p className="muted small">Rows marked “own session” are accounts’ own Flow sessions that have rendered clips; their credits are tracked the same way.</p>
         </>
       )}
     </section>
   );
 }
 
-function PoolRow(props: { a: PoolAccount; onRows: (r: PoolAccount[]) => void; onNotice: (n: Notice) => void; onEdit: (id: string) => void }): React.JSX.Element {
+function PoolRow(props: { a: PoolAccount; onReload: () => Promise<void>; onNotice: (n: Notice) => void; onEdit: (id: string) => void }): React.JSX.Element {
   const { a } = props;
-  const [s, setS] = useState({ monthlyCredits: String(a.settings.monthlyCredits), resetDay: String(a.settings.resetDay), creditsPerDownload: String(a.settings.creditsPerDownload) });
+  const initial = {
+    monthlyCredits: String(a.settings.monthlyCredits),
+    resetDay: String(a.settings.resetDay),
+    creditsPerDownload: String(a.settings.creditsPerDownload),
+    dailyCreditLimit: a.settings.dailyCreditLimit === null ? '' : String(a.settings.dailyCreditLimit),
+  };
+  const [s, setS] = useState(initial);
   const [balance, setBalance] = useState('');
-  const changed = s.monthlyCredits !== String(a.settings.monthlyCredits) || s.resetDay !== String(a.settings.resetDay) || s.creditsPerDownload !== String(a.settings.creditsPerDownload);
+  const changed = JSON.stringify(s) !== JSON.stringify(initial);
   const handle = (r: Awaited<ReturnType<typeof bridge.flowPool>>): void => {
     if (r.ok) {
       props.onNotice(null);
-      props.onRows(r.data);
+      void props.onReload();
     } else {
       const d = describeError(r.error.code);
       props.onNotice({ tone: 'bad', text: `${d.message} ${d.recovery}`, fields: r.error.details ?? [] });
@@ -109,7 +118,7 @@ function PoolRow(props: { a: PoolAccount; onRows: (r: PoolAccount[]) => void; on
   return (
     <tr data-account-id={a.id}>
       <td>
-        <strong>{a.displayName}</strong>
+        <strong>{a.displayName}</strong> {!a.pool && <Badge tone="muted">own session</Badge>}
         <div>
           {!a.proxyConfigured && <Badge tone="warn">no proxy</Badge>}
           {!a.flowSessionId && <Badge tone="warn">no Flow session</Badge>}
@@ -117,6 +126,10 @@ function PoolRow(props: { a: PoolAccount; onRows: (r: PoolAccount[]) => void; on
       </td>
       <td data-testid="pool-remaining">
         {a.remaining.toLocaleString()} <span className="muted small">(~{videosLeft} videos)</span>
+        <div className="muted small">
+          today {a.usedToday}
+          {a.settings.dailyCreditLimit !== null ? ` / ${a.settings.dailyCreditLimit}` : ' (no daily limit)'}
+        </div>
       </td>
       <td>{a.downloadsThisPeriod}</td>
       <td>
@@ -124,12 +137,26 @@ function PoolRow(props: { a: PoolAccount; onRows: (r: PoolAccount[]) => void; on
           <input aria-label={`Monthly credits for ${a.displayName}`} className="target wide-target" value={s.monthlyCredits} onChange={(e) => setS({ ...s, monthlyCredits: e.target.value })} />
           <input aria-label={`Reset day for ${a.displayName}`} className="target" value={s.resetDay} onChange={(e) => setS({ ...s, resetDay: e.target.value })} />
           <input aria-label={`Credits per video for ${a.displayName}`} className="target" value={s.creditsPerDownload} onChange={(e) => setS({ ...s, creditsPerDownload: e.target.value })} />
+          <input
+            aria-label={`Daily credit limit for ${a.displayName}`}
+            className="target wide-target"
+            placeholder="no limit"
+            value={s.dailyCreditLimit}
+            onChange={(e) => setS({ ...s, dailyCreditLimit: e.target.value })}
+          />
           {changed && (
             <button
               type="button"
               className="link"
               onClick={async () =>
-                handle(await bridge.savePoolSettings(a.id, { monthlyCredits: Number(s.monthlyCredits), resetDay: Number(s.resetDay), creditsPerDownload: Number(s.creditsPerDownload) }))
+                handle(
+                  await bridge.savePoolSettings(a.id, {
+                    monthlyCredits: Number(s.monthlyCredits),
+                    resetDay: Number(s.resetDay),
+                    creditsPerDownload: Number(s.creditsPerDownload),
+                    dailyCreditLimit: s.dailyCreditLimit.trim() === '' ? null : Number(s.dailyCreditLimit),
+                  }),
+                )
               }
             >
               save

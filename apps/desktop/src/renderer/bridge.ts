@@ -261,13 +261,85 @@ export interface AffiliateView {
 export interface PoolAccount {
   id: string;
   displayName: string;
-  settings: { monthlyCredits: number; resetDay: number; creditsPerDownload: number };
+  pool: boolean;
+  settings: { monthlyCredits: number; resetDay: number; creditsPerDownload: number; dailyCreditLimit: number | null };
   periodStart: string;
   used: number;
   remaining: number;
+  usedToday: number;
   downloadsThisPeriod: number;
   proxyConfigured: boolean;
   flowSessionId: string | null;
+}
+
+export interface AffiliateCreativeConfig {
+  characters: string[];
+  reactors: string[];
+  povs: string[];
+  hooks: string[];
+  setups: string[];
+  locations: string[];
+  punchlines: string[];
+  style: string;
+  avoid: string;
+  continuity: 'seamless' | 'cut' | 'mixed';
+  count: number;
+  hashtags: string[];
+  referenceAssetIds: string[];
+}
+
+export type ClipStatus = 'waiting' | 'in_flow' | 'received' | 'unusable' | 'approved';
+export type VideoPlanStatus = 'draft' | 'approved' | 'rejected' | 'producing' | 'stitching' | 'review' | 'final_approved';
+
+export interface ClipView {
+  id: string;
+  slot: 'A' | 'B';
+  status: ClipStatus;
+  flowBundleId: string | null;
+  flowName: string | null;
+  jobId: string | null;
+  attempts: number;
+  credits: number;
+  lastReason: string | null;
+  manualSteps: string[];
+  updatedAt: string;
+}
+
+export interface AffiliateVideoView {
+  id: string;
+  productRowId: string;
+  productId: string;
+  productTitle: string;
+  showcase: string;
+  batchId: string;
+  position: number;
+  continuity: 'seamless' | 'cut';
+  axes: Record<string, string>;
+  clipA: { sections: Array<{ key: string; title: string; text: string }>; caption: string };
+  clipB: { sections: Array<{ key: string; title: string; text: string }>; caption: string };
+  textA: string;
+  textB: string;
+  caption: string;
+  edited: boolean;
+  flags: string[];
+  duplicates: number[];
+  status: VideoPlanStatus;
+  clips: ClipView[];
+  final: { file: string; durationSeconds: number; width: number; height: number; bytes: number; sha256: string } | null;
+  reviewNote: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AffiliateStudioView {
+  product: { id: string; productId: string; title: string; summary: string; listing: string; showcase: string; readiness: string[]; features: string[] } | null;
+  config: AffiliateCreativeConfig;
+  limits: { maxClipAttempts: number; videosPerProductPerDay: number };
+  ffmpeg: { available: boolean; version: string | null };
+  references: ReferenceAsset[];
+  videos: AffiliateVideoView[];
+  today: { attempts: number; generationFailed: number; unusable: number; clipsApproved: number; finalsApproved: number; startedToday: number } | null;
 }
 
 export interface BoardRow {
@@ -390,6 +462,34 @@ interface UgcBridge {
   savePoolSettings(bundleId: string, settings: PoolAccount['settings']): Promise<Result<PoolAccount[]>>;
   setPoolRemaining(bundleId: string, remaining: number): Promise<Result<PoolAccount[]>>;
   takePromptToPool(bundleId: string, itemId: string, poolId: string | null): Promise<Result<{ poolId: string; view: StudioView }>>;
+  flowOthers(): Promise<Result<PoolAccount[]>>;
+  affiliateStudioView(bundleId: string, productRowId: string): Promise<Result<AffiliateStudioView>>;
+  saveAffiliateCreative(bundleId: string, productRowId: string, config: AffiliateCreativeConfig): Promise<Result<AffiliateStudioView>>;
+  setAffiliateLimits(bundleId: string, productRowId: string, limits: AffiliateStudioView['limits']): Promise<Result<AffiliateStudioView>>;
+  generateVideoPlans(bundleId: string, productRowId: string): Promise<Result<{ batchId: string; view: AffiliateStudioView }>>;
+  updateVideoPlan(
+    bundleId: string,
+    productRowId: string,
+    videoId: string,
+    edit: { clipA: Array<{ key: string; text: string }>; clipB: Array<{ key: string; text: string }>; caption: string },
+  ): Promise<Result<AffiliateStudioView>>;
+  videoPlanAction(bundleId: string, productRowId: string, videoId: string, action: 'approve' | 'reject' | 'reopen'): Promise<Result<AffiliateStudioView>>;
+  handOffClip(bundleId: string, productRowId: string, clipId: string, flowBundleId: string | null): Promise<Result<AffiliateStudioView>>;
+  copyClipPrompt(bundleId: string, clipId: string): Promise<Result<{ copied: boolean }>>;
+  clipFailed(bundleId: string, productRowId: string, clipId: string, reason: string): Promise<Result<AffiliateStudioView>>;
+  markClipUnusable(bundleId: string, productRowId: string, clipId: string, reason: string): Promise<Result<AffiliateStudioView>>;
+  importClip(bundleId: string, productRowId: string, clipId: string): Promise<Result<{ canceled: boolean; view?: AffiliateStudioView }>>;
+  exportLastFrame(bundleId: string, clipId: string): Promise<Result<{ exported: boolean }>>;
+  stitchVideo(bundleId: string, productRowId: string, videoId: string): Promise<Result<AffiliateStudioView>>;
+  reviewVideo(
+    bundleId: string,
+    productRowId: string,
+    videoId: string,
+    decision: { approve: true } | { approve: false; reason: string; redo: 'A' | 'B' | 'both' },
+  ): Promise<Result<AffiliateStudioView>>;
+  affiliateLibrary(bundleId: string): Promise<Result<{ videos: AffiliateVideoView[]; ffmpeg: { available: boolean; version: string | null } }>>;
+  revealFinalVideo(bundleId: string, videoId: string): Promise<Result<{ shown: boolean }>>;
+  addProductImage(bundleId: string, rightsConfirmed: boolean): Promise<Result<{ canceled: boolean; assetId?: string }>>;
   affiliateView(bundleId: string): Promise<Result<AffiliateView>>;
   addAffiliateProducts(bundleId: string, text: string): Promise<Result<{ result: { added: string[]; existing: string[]; rejected: Array<{ line: number; input: string; issue: string }> }; view: AffiliateView }>>;
   captureProductFromResearch(bundleId: string): Promise<Result<{ productId: string; outcome: 'added' | 'existing'; view: AffiliateView }>>;
@@ -494,6 +594,22 @@ const MESSAGES: Record<string, [message: string, recovery: string]> = {
   invalid_preset: ['The preset can’t be saved.', 'Give it a name and a description (max 2,000 characters).'],
   invalid_post_link: ['That isn’t a TikTok video link.', 'Paste the full link of your post (https://www.tiktok.com/@you/video/…) or leave it empty.'],
   invalid_target: ['The daily target must be a whole number from 1 to 50.', 'Enter a number and save again.'],
+  flow_budget_exhausted: ['That Flow account has no credits left within its limits.', 'Choose another Flow account, raise its daily limit, or wait for its reset.'],
+  product_not_ready: ['This product isn’t ready for video plans.', 'Confirm the exact listing, enter the title and at least one verified feature.'],
+  invalid_creative_config: ['Some creative settings are invalid.', 'Fix the fields listed below.'],
+  unknown_clip: ['That clip no longer exists.', 'Refresh the screen.'],
+  invalid_plan_edit: ['The edited plan can’t be saved.', 'Every section needs text (max 4,000 characters each).'],
+  plan_blocked: ['This plan can’t be approved yet.', 'Edit it to fix the problems listed below.'],
+  plan_action_not_allowed: ['That step isn’t possible for this plan’s current status.', 'Refresh and check its status.'],
+  clip_action_not_allowed: ['That step isn’t possible for this clip right now.', 'Approve the plan first, or check the clip’s status.'],
+  attempt_limit_reached: ['This clip has reached its attempt limit.', 'Raise “Attempts per clip” or drop this plan.'],
+  product_daily_limit_reached: ['Today’s limit of videos for this product is reached.', 'Continue tomorrow or raise the limit.'],
+  not_a_flow_account: ['That account has no Google Flow session.', 'Choose a Flow account with a session.'],
+  ffmpeg_missing: ['FFmpeg isn’t installed or wasn’t found.', 'Install FFmpeg (or set UGC_FFMPEG_DIR) and restart the app.'],
+  invalid_clip_file: ['That file can’t be used as a clip.', 'Choose the MP4 you downloaded from Google Flow.'],
+  stitch_failed: ['Joining the clips failed.', 'Check the reason below; replace a clip if it’s broken.'],
+  invalid_limits: ['The limits must be whole numbers (attempts 1–20, videos per product 1–50).', 'Fix them and save again.'],
+  invalid_reason: ['Choose a reason.', 'Pick one from the list.'],
   not_pool_account: ['That isn’t a Flow pool account.', 'Choose an account created as “Flow pool”.'],
   invalid_pool_settings: ['Some credit settings are invalid.', 'Fix the fields listed below.'],
   invalid_credit_balance: ['That balance isn’t valid.', 'Enter the remaining credits Google Flow shows (a whole number).'],
@@ -585,6 +701,22 @@ const FIELD_MESSAGES: Record<string, string> = {
   content_mismatch: 'The file’s content doesn’t match its extension.',
   reference_too_large: 'Reference files can be up to 200 MB.',
   invalid_title: 'Title: up to 200 characters.',
+  invalid_daily_credit_limit: 'Daily credit limit: a whole number, or leave it empty for no daily limit.',
+  monthly_credits_exhausted: 'This Flow account’s monthly credits are used up.',
+  daily_credit_limit_reached: 'This Flow account reached its daily credit limit.',
+  no_flow_session: 'This account has no Google Flow session.',
+  listing_not_confirmed: 'Confirm the exact listing on the Products screen.',
+  title_missing: 'Enter the product title (as on the listing).',
+  no_verified_features: 'Add at least one verified feature on the Products screen.',
+  invalid_pool: 'Every list needs at least one option (max 40, 400 characters each).',
+  invalid_continuity: 'Choose seamless, cut or mixed.',
+  product_block_missing: 'The product description must appear exactly in both clips.',
+  character_missing: 'A seamless plan must keep the same character text in both clips.',
+  unverified_claim: 'A claim that isn’t in the product sheet (price, discount, original, guarantee, medical…). Remove it or add it to the product’s verified details.',
+  plan_not_approved: 'Approve the plan first (nothing is spent before approval).',
+  clips_not_ready: 'Both clips must be received first.',
+  invalid_clip: 'One of the clips isn’t a valid ~8-second MP4.',
+  ffmpeg_error: 'FFmpeg reported an error while joining.',
   invalid_monthly_credits: 'Monthly credits: a whole number, e.g. 1050 for Google AI Pro.',
   invalid_reset_day: 'Reset day: 1–28 (the day of the month your credits renew).',
   invalid_credits_per_download: 'Credits per video: a whole number, e.g. 12 for an 8-second Omni Flash clip.',

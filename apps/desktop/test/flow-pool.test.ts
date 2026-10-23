@@ -87,7 +87,7 @@ describe('Flow session pool (synthetic)', () => {
   });
 
   it('settings, credit period, downloads (once per job), owner corrections', () => {
-    const { pool, make, jobs } = setup();
+    const { pool, make, jobs, bundles, profiles } = setup();
     const p = make('Synthetic Flow Pool 01', 'flow_pool');
     const growth = make('Synthetic Ternak 01', 'account_growth');
     expect(pool.account(p.id)).toMatchObject({ settings: { monthlyCredits: 1050, resetDay: 1, creditsPerDownload: 12 }, remaining: 1050, used: 0, proxyConfigured: true });
@@ -98,7 +98,7 @@ describe('Flow session pool (synthetic)', () => {
     const job = completedDownload(jobs, growth.id, p.id);
     pool.recordDownload(job);
     pool.recordDownload(job); // idempotent
-    pool.recordDownload(completedDownload(jobs, growth.id, growth.id)); // the account's own Flow session: not pool credits
+    pool.recordDownload(completedDownload(jobs, growth.id, growth.id)); // the account's own Flow session: counted on that account, not the pool
     expect(pool.account(p.id)).toMatchObject({ used: 12, remaining: 1038, downloadsThisPeriod: 1 });
 
     pool.setRemaining(p.id, 1000);
@@ -106,7 +106,16 @@ describe('Flow session pool (synthetic)', () => {
     pool.setRemaining(p.id, 1020); // corrections can go up as well
     expect(pool.account(p.id).remaining).toBe(1020);
     expect(() => pool.setRemaining(p.id, -1)).toThrow(PoolError);
-    expect(() => pool.saveSettings(growth.id, { monthlyCredits: 1, resetDay: 1, creditsPerDownload: 1 })).toThrow(PoolError);
+    // An account's own Flow session is a Flow account too (A2): its credits and limits are tracked the same way.
+    pool.saveSettings(growth.id, { monthlyCredits: 1050, resetDay: 1, creditsPerDownload: 12, dailyCreditLimit: 24 });
+    expect(pool.account(growth.id)).toMatchObject({ pool: false, usedToday: 12, remaining: 1038, settings: { dailyCreditLimit: 24 } });
+    expect(pool.canSpend(growth.id)).toEqual({ ok: true });
+    pool.recordDownload(completedDownload(jobs, growth.id, growth.id));
+    expect(pool.canSpend(growth.id)).toEqual({ ok: false, reason: 'daily_credit_limit_reached' });
+    expect(pool.others().map((a) => a.id)).toEqual([growth.id]);
+    expect(() => pool.saveSettings(growth.id, { monthlyCredits: 1050, resetDay: 1, creditsPerDownload: 12, dailyCreditLimit: 0 })).toThrow(PoolError);
+    const noFlow = bundles.create({ displayName: 'No sessions', mode: 'affiliate_ugc' }, [], profiles);
+    expect(() => pool.saveSettings(noFlow.id, { monthlyCredits: 1, resetDay: 1, creditsPerDownload: 1 })).toThrow(PoolError);
   });
 
   it('the period restarts on the reset day', () => {
@@ -146,8 +155,8 @@ describe('Flow session pool (synthetic)', () => {
     expect(studio.takeToPool(growth.id, one!.id, p.id)).toContain('Scene: ');
     studio.act(growth.id, two!.id, 'start_manual'); // the account's own Flow window
     expect(studio.view(growth.id).batches[0]!.items[0]).toMatchObject({ status: 'generating', handoff: 'manual', flowBundleId: p.id });
-    expect(studio.claimManualPrompt(p.id)).toEqual({ itemId: one!.id, targetBundleId: growth.id });
-    expect(studio.claimManualPrompt(growth.id)).toEqual({ itemId: two!.id, targetBundleId: growth.id });
+    expect(studio.claimManualPrompt(p.id)).toMatchObject({ itemId: one!.id, targetBundleId: growth.id });
+    expect(studio.claimManualPrompt(growth.id)).toMatchObject({ itemId: two!.id, targetBundleId: growth.id });
     const job = completedDownload(jobs, growth.id, p.id, one!.id);
     studio.jobEnded(job);
     expect(studio.view(growth.id).batches[0]!.items[0]).toMatchObject({ status: 'video_ready', video: { jobId: job.id } });
