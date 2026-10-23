@@ -20,7 +20,7 @@ export function Dashboard(props: { accounts: Account[]; onAdd: () => void; onEdi
           </p>
         </div>
         <div className="actions end">
-          {accounts.some((a) => a.mode === 'flow_pool') && (
+          {accounts.length > 0 && (
             <button type="button" onClick={props.onPool}>
               Flow pool
             </button>

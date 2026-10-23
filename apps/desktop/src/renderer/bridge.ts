@@ -263,6 +263,8 @@ export interface PoolAccount {
   displayName: string;
   pool: boolean;
   settings: { monthlyCredits: number; resetDay: number; creditsPerDownload: number; dailyCreditLimit: number | null };
+  /** False while the settings are the editable defaults. */
+  settingsSaved: boolean;
   periodStart: string;
   used: number;
   remaining: number;

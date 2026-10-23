@@ -11,7 +11,7 @@ import { GenerationStore } from './generation-store.js';
 import { AffiliateService } from './affiliate.js';
 import { AffiliateStudioService } from './affiliate-studio.js';
 import { FfmpegRunner } from './ffmpeg.js';
-import { FlowPoolService } from './flow-pool.js';
+import { configuredFlowSession, FlowPoolService } from './flow-pool.js';
 import { GrowthService } from './growth.js';
 import { PromptStudioService } from './prompt-studio.js';
 import { registerIpc } from './ipc.js';
@@ -118,7 +118,7 @@ if (securityCheck) {
       onJobEnded: (job) => studio.jobEnded(job),
     });
     // Flow session pool (F0): credit ledger for Flow-only Google accounts.
-    const flowSessionOf = (bundleId: string): string | null => sessions!.list().find((p) => p.bundleId === bundleId && p.platformId === 'google-flow')?.id ?? null;
+    const flowSessionOf = configuredFlowSession(sessions!);
     const pool = new FlowPoolService(meta, bundles, log, flowSessionOf);
     // Prompt Studio (T1): deterministic template engine, no AI service and no network.
     const studio: PromptStudioService = new PromptStudioService({

@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findFfmpeg, makeSyntheticClip, startSyntheticProxy, startSyntheticSite, type SyntheticProxy, type SyntheticSite } from '@ugc/test-fixtures';
-import { createAccount, fusedElectron, launch, nextSiteWindow, ok, quit, stubOpenDialog, workDir, type Account } from './harness.js';
+import { createAccount, fusedElectron, launch, nextSiteWindow, ok, quit, sessionOf, stubOpenDialog, workDir, type Account } from './harness.js';
 
 // A2 demonstration: synthetic affiliate account and product, a synthetic Flow
 // pool account, clips made by the local FFmpeg from test patterns. One plan
@@ -40,7 +40,10 @@ test('A2: plan → Clip A/B by hand → FFmpeg join → review → Affiliate Vid
   const p = { protocol: 'http', host: '127.0.0.1', port: proxy.port };
   try {
     const aff = await ok<Account>(run, 'setAccountProxy', (await createAccount(run, 'Synthetic Affiliate 01', 'affiliate_ugc')).id, p, false);
-    await ok<Account>(run, 'setAccountProxy', (await createAccount(run, 'Synthetic Flow Pool 01', 'flow_pool')).id, p, false);
+    const poolAcc = await ok<Account>(run, 'setAccountProxy', (await createAccount(run, 'Synthetic Flow Pool 01', 'flow_pool')).id, p, false);
+    await ok(run, 'confirmStatus', sessionOf(poolAcc, 'google-flow').id, 'logged_in');
+    // The affiliate account's own Flow session, just configured: no credit history, no saved Flow settings.
+    await ok(run, 'confirmStatus', sessionOf(aff, 'google-flow').id, 'logged_in');
     const added = await ok<{ view: { products: Array<{ id: string }> } }>(run, 'addAffiliateProducts', aff.id, PRODUCT);
     const row = added.view.products[0]!.id;
     await ok(run, 'setProductListing', aff.id, row, 'confirmed');
@@ -50,6 +53,11 @@ test('A2: plan → Clip A/B by hand → FFmpeg join → review → Affiliate Vid
     await ui.locator('tr', { hasText: 'Synthetic Affiliate 01' }).getByRole('button', { name: 'Products' }).click();
     await ui.locator(`article[data-product-id="${PRODUCT}"]`).getByRole('button', { name: 'Create videos' }).click();
     await expect(ui.getByRole('heading', { name: 'Create videos · Kipas Angin Mini Sintetis' })).toBeVisible();
+    // Both Flow identities are offered: the pool and the account's own new session (zero history, default settings).
+    const flowSelect = ui.getByLabel('Flow account', { exact: true });
+    await expect(flowSelect.locator('option', { hasText: 'Synthetic Affiliate 01 (own session) · 1050 left' })).toHaveCount(1);
+    await expect(flowSelect.locator('option', { hasText: 'Synthetic Flow Pool 01 (pool)' })).toHaveCount(1);
+    await expect(flowSelect).toHaveValue('pool');
     await ui.getByRole('button', { name: 'Generate 10 plans' }).click();
     const plans = ui.locator('article.plan-card');
     await expect(plans).toHaveCount(10);
@@ -140,6 +148,14 @@ test('A2: plan → Clip A/B by hand → FFmpeg join → review → Affiliate Vid
     await ui.getByRole('button', { name: '← All accounts' }).click();
     await ui.getByRole('button', { name: 'Flow pool' }).click();
     await expect(ui.getByTestId('pool').locator('tr', { hasText: 'Synthetic Flow Pool 01' }).getByTestId('pool-remaining')).toContainText('1,038');
+    // The affiliate account's own session is listed with editable default settings and no credits used.
+    const own = ui.getByTestId('pool').locator('tr', { hasText: 'Synthetic Affiliate 01' });
+    await expect(own).toContainText('default settings: edit and save');
+    await expect(own.getByTestId('pool-remaining')).toContainText('1,050');
+    await own.getByLabel('Daily credit limit for Synthetic Affiliate 01').fill('240');
+    await own.getByRole('button', { name: 'save' }).click();
+    await expect(own).not.toContainText('default settings');
+    await expect(own.getByTestId('pool-remaining')).toContainText('/ 240');
   } finally {
     await quit(run);
   }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createLogger, platformsForMode, TemplateProvider } from '@ugc/core';
-import { FlowPoolService, PoolError } from '../src/main/flow-pool.js';
+import { configuredFlowSession, FlowPoolService, PoolError } from '../src/main/flow-pool.js';
 import { GenerationStore } from '../src/main/generation-store.js';
 import { BundleStore, MetadataDb, MIGRATIONS, ProfileStore, type ProxyState } from '../src/main/profiles.js';
 import { PromptStudioService } from '../src/main/prompt-studio.js';
@@ -28,14 +28,16 @@ function setup(now: () => Date = () => new Date('2026-10-23T10:00:00')) {
   const profiles = new ProfileStore(meta);
   const jobs = new GenerationStore(meta);
   const log = createLogger(() => undefined);
-  const flowSessionOf = (id: string) => profiles.forBundle(id).find((p) => p.platformId === 'google-flow')?.id ?? null;
-  const pool = new FlowPoolService(meta, bundles, log, flowSessionOf, now);
-  const make = (name: string, mode: 'flow_pool' | 'account_growth' | 'affiliate_ugc', proxy = true) => {
+  const pool = new FlowPoolService(meta, bundles, log, configuredFlowSession(profiles), now);
+  const flowSession = (bundleId: string) => profiles.forBundle(bundleId).find((p) => p.platformId === 'google-flow')!;
+  /** A new account; its Google Flow session is configured (as after a cookie import) unless `flow` is false. */
+  const make = (name: string, mode: 'flow_pool' | 'account_growth' | 'affiliate_ugc', proxy = true, flow = true) => {
     const specs = platformsForMode(mode).map((p) => ({ platformId: p.id, label: p.id, optional: p.optional }));
     const b = bundles.create({ displayName: name, mode }, specs, profiles);
+    if (flow) profiles.update(flowSession(b.id).id, { status: 'imported_unverified', statusReason: 'cookies_imported' });
     return proxy ? bundles.update(b.id, { proxy: PROXY }) : b;
   };
-  return { userData, meta, bundles, profiles, jobs, pool, make, log };
+  return { userData, meta, bundles, profiles, jobs, pool, make, log, flowSession };
 }
 
 const completedDownload = (jobs: GenerationStore, target: string, flowBundleId: string, promptItemId: string | null = null) => {
@@ -116,6 +118,47 @@ describe('Flow session pool (synthetic)', () => {
     expect(() => pool.saveSettings(growth.id, { monthlyCredits: 1050, resetDay: 1, creditsPerDownload: 12, dailyCreditLimit: 0 })).toThrow(PoolError);
     const noFlow = bundles.create({ displayName: 'No sessions', mode: 'affiliate_ugc' }, [], profiles);
     expect(() => pool.saveSettings(noFlow.id, { monthlyCredits: 1, resetDay: 1, creditsPerDownload: 1 })).toThrow(PoolError);
+  });
+
+  it('a newly configured Flow session with no credit history or settings is an eligible Flow identity (regression)', () => {
+    const { pool, make, jobs, profiles, flowSession } = setup();
+    // No pool account and no credit events at all, as on a fresh profile.
+    const aff = make('Synthetic Affiliate 01', 'affiliate_ugc');
+    const noSession = make('Synthetic Affiliate 02', 'affiliate_ugc', true, false);
+    const growth = make('Synthetic Ternak 01', 'account_growth');
+    expect(pool.list()).toEqual([]);
+    expect(pool.others().map((a) => a.id)).toEqual([aff.id, growth.id]);
+    expect(pool.account(aff.id)).toMatchObject({ pool: false, settingsSaved: false, settings: { monthlyCredits: 1050, resetDay: 1, creditsPerDownload: 12, dailyCreditLimit: null }, used: 0, remaining: 1050 });
+    expect(pool.canSpend(aff.id)).toEqual({ ok: true });
+    // Initial settings are created from editable values.
+    pool.saveSettings(aff.id, { monthlyCredits: 1000, resetDay: 5, creditsPerDownload: 10, dailyCreditLimit: 120 });
+    expect(pool.account(aff.id)).toMatchObject({ settingsSaved: true, settings: { monthlyCredits: 1000, resetDay: 5, creditsPerDownload: 10, dailyCreditLimit: 120 } });
+    // A clip rendered by the Ternak account's Flow session for the affiliate account is charged to the Flow identity, not to the TikTok destination.
+    pool.recordDownload(completedDownload(jobs, aff.id, growth.id));
+    expect(pool.account(growth.id).used).toBe(12);
+    expect(pool.account(aff.id).used).toBe(0);
+    // A session never set up, reported logged out, or refused is not a Flow identity and can't be spent from.
+    expect(pool.canSpend(noSession.id)).toEqual({ ok: false, reason: 'no_flow_session' });
+    expect(() => pool.account(noSession.id)).toThrow(PoolError);
+    profiles.update(flowSession(growth.id).id, { status: 'expired', statusReason: 'owner_reported_logged_out' });
+    expect(pool.others().map((a) => a.id)).toEqual([aff.id]);
+    expect(pool.canSpend(growth.id)).toEqual({ ok: false, reason: 'no_flow_session' });
+    profiles.update(flowSession(growth.id).id, { status: 'confirmed_by_user', statusReason: 'owner_confirmed' });
+    expect(pool.others().map((a) => a.id)).toEqual([aff.id, growth.id]);
+  });
+
+  it('pool accounts stay selectable; one without a configured Flow session is listed but never picked', () => {
+    const { pool, make } = setup();
+    const ready = make('Pool ready', 'flow_pool');
+    const unset = make('Pool not set up', 'flow_pool', true, false);
+    expect(pool.list().map((a) => [a.id, a.flowSessionId !== null])).toEqual([
+      [ready.id, true],
+      [unset.id, false],
+    ]);
+    pool.setRemaining(ready.id, 100);
+    expect(pool.pick().id).toBe(ready.id);
+    pool.setRemaining(ready.id, 0);
+    expect(() => pool.pick()).toThrow(expect.objectContaining({ code: 'no_pool_account_available' }));
   });
 
   it('the period restarts on the reset day', () => {

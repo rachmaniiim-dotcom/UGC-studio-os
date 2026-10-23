@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startSyntheticProxy, startSyntheticSite, type SyntheticProxy, type SyntheticSite } from '@ugc/test-fixtures';
-import { call, createAccount, fusedElectron, launch, nextSiteWindow, ok, quit, workDir, type Account } from './harness.js';
+import { call, createAccount, fusedElectron, launch, nextSiteWindow, ok, quit, sessionOf, workDir, type Account } from './harness.js';
 
 // F0: Flow pool accounts (Flow-only Google accounts with their own proxy)
 // supply credits to a Ternak Akun account. A queued prompt goes to the pool
@@ -37,6 +37,8 @@ test('Flow pool: credits, prompt hand-off to a pool account, download back to th
       error: { code: 'invalid_account', details: ['mode_change_not_allowed'] },
     });
     poolAcc = await ok<Account>(run, 'setAccountProxy', poolAcc.id, { protocol: 'http', host: '127.0.0.1', port: proxy.port }, false);
+    // Only a configured Flow session can render: the owner confirms the pool account's (synthetic) login.
+    await ok(run, 'confirmStatus', sessionOf(poolAcc, 'google-flow').id, 'logged_in');
     await ui.reload();
 
     // Pool screen: starts with Google AI Pro defaults.

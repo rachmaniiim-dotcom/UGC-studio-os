@@ -7,7 +7,7 @@ import { findFfmpeg, makeSyntheticClip } from '@ugc/test-fixtures';
 import { AffiliateService } from '../src/main/affiliate.js';
 import { AffiliateStudioError, AffiliateStudioService } from '../src/main/affiliate-studio.js';
 import { FfmpegRunner } from '../src/main/ffmpeg.js';
-import { FlowPoolService } from '../src/main/flow-pool.js';
+import { configuredFlowSession, FlowPoolService } from '../src/main/flow-pool.js';
 import { GenerationStore } from '../src/main/generation-store.js';
 import { VideoLibrary } from '../src/main/library.js';
 import { BundleStore, MetadataDb, ProfileStore, type ProxyState } from '../src/main/profiles.js';
@@ -27,13 +27,15 @@ async function setup() {
   const library = new VideoLibrary(userData);
   const lines: string[] = [];
   const log = createLogger((l) => lines.push(l));
-  const flowSessionOf = (id: string) => profiles.forBundle(id).find((p) => p.platformId === 'google-flow')?.id ?? null;
+  const flowSessionOf = configuredFlowSession(profiles);
   const pool = new FlowPoolService(meta, bundles, log, flowSessionOf);
   const prompts = new PromptStudioService({ meta, bundles, jobs, generation: null, provider: new TemplateProvider(), log, userData, sensitiveValues: () => [] });
   const ffmpeg = await FfmpegRunner.locate();
   const studio = new AffiliateStudioService({ meta, bundles, jobs, library, pool, log, assets: (b) => prompts.assets(b), ffmpeg: () => ffmpeg, flowSessionOf });
   const make = (name: string, mode: 'affiliate_ugc' | 'account_growth' | 'flow_pool') => {
     const b = bundles.create({ displayName: name, mode }, platformsForMode(mode).map((p) => ({ platformId: p.id, label: p.id, optional: p.optional })), profiles);
+    const flow = profiles.forBundle(b.id).find((p) => p.platformId === 'google-flow')!;
+    profiles.update(flow.id, { status: 'imported_unverified', statusReason: 'cookies_imported' });
     return bundles.update(b.id, { proxy: PROXY });
   };
   const aff = make('Synthetic Affiliate 01', 'affiliate_ugc');

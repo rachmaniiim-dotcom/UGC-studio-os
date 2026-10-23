@@ -95,7 +95,11 @@ export function AffiliateStudio(props: { account: Account | null; productRowId: 
 
   const loadFlows = useCallback(async () => {
     const [p, o] = await Promise.all([bridge.flowPool(), bridge.flowOthers()]);
-    setFlows([...(p.ok ? p.data : []), ...(o.ok ? o.data : [])]);
+    const pools = p.ok ? p.data : [];
+    const own = o.ok ? o.data : [];
+    setFlows([...pools, ...own]);
+    // With no pool account, start from the first configured Flow session instead.
+    setFlowChoice((c) => (c === 'pool' && pools.length === 0 && own.length > 0 ? own[0]!.id : c));
   }, []);
   const load = useCallback(async () => {
     if (!account) return;
@@ -174,7 +178,9 @@ export function AffiliateStudio(props: { account: Account | null; productRowId: 
             <h3 id="flow-title">Flow account for the next clip</h3>
             <div className="actions">
               <select aria-label="Flow account" value={flowChoice} onChange={(e) => setFlowChoice(e.target.value)}>
-                <option value="pool">Flow pool: the account with the most credits</option>
+                <option value="pool" disabled={!flows.some((f) => f.pool)}>
+                  {flows.some((f) => f.pool) ? 'Flow pool: the account with the most credits' : 'Flow pool (no pool accounts)'}
+                </option>
                 {flows.map((f) => (
                   <option key={f.id} value={f.id}>
                     {f.displayName} ({f.pool ? 'pool' : 'own session'}) · {f.remaining} left
@@ -182,7 +188,11 @@ export function AffiliateStudio(props: { account: Account | null; productRowId: 
                   </option>
                 ))}
               </select>
-              <span className="small muted">Credits are counted on the Flow account that renders each clip. Limits are set on the Flow pool screen.</span>
+              <span className="small muted">
+                {flows.length === 0
+                  ? 'No Flow account yet: import or confirm a Google Flow session on any account (or add a Flow pool account).'
+                  : 'Credits are counted on the Flow account that renders each clip, never on this TikTok account. Limits are set on the Flow pool screen.'}
+              </span>
             </div>
           </section>
           <section className="card" aria-labelledby="plans-title">

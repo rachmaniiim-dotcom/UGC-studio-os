@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Logger } from '@ugc/core';
 import type { GenerationJob } from './generation-store.js';
-import type { BundleStore, MetadataDb } from './profiles.js';
+import type { BundleStore, MetadataDb, PocProfile } from './profiles.js';
 
 /**
  * Flow accounts and credits (F0, extended in A2). A "Flow account" is any
@@ -13,6 +13,19 @@ import type { BundleStore, MetadataDb } from './profiles.js';
  * authoritative, so the owner can correct the balance. An optional daily
  * credit limit per Flow account pauses hand-offs once reached.
  */
+
+/** Flow session states that can't render for anyone: never set up, or reported logged out / refused. */
+const UNUSABLE_FLOW_STATUSES: ReadonlySet<string> = new Set(['never_configured', 'expired', 'rejected']);
+
+/**
+ * The account's Google Flow session if it is configured (imported, restored or
+ * confirmed, and not reported logged out), else null. Any such account is a
+ * Flow identity, with or without credit history or saved settings. Opening its
+ * window still requires the proxy test, and Google's own login applies there.
+ */
+export function configuredFlowSession(sessions: { list(): readonly PocProfile[] }): (bundleId: string) => string | null {
+  return (bundleId) => sessions.list().find((p) => p.bundleId === bundleId && p.platformId === 'google-flow' && !UNUSABLE_FLOW_STATUSES.has(p.status))?.id ?? null;
+}
 
 export const DEFAULT_POOL_SETTINGS = { monthlyCredits: 1050, resetDay: 1, creditsPerDownload: 12, dailyCreditLimit: null } as const;
 
@@ -43,6 +56,8 @@ export interface PoolAccount {
   /** True for a dedicated Flow pool account; false for an account's own Flow session. */
   readonly pool: boolean;
   readonly settings: PoolSettings;
+  /** False while the settings are the editable defaults (nothing saved for this Flow identity yet). */
+  readonly settingsSaved: boolean;
   readonly periodStart: string;
   readonly used: number;
   readonly remaining: number;
@@ -143,6 +158,7 @@ export class FlowPoolService {
       displayName: bundle.displayName,
       pool: bundle.mode === 'flow_pool',
       settings,
+      settingsSaved: this.#db.prepare('SELECT 1 FROM flow_pool_settings WHERE bundle_id = ?').get(bundleId) !== undefined,
       periodStart: start.toISOString(),
       used,
       remaining: settings.monthlyCredits - used,
@@ -161,16 +177,15 @@ export class FlowPoolService {
       .map((b) => this.account(b.id));
   }
 
-  /** Accounts' own Flow sessions that have used credits or have settings (shown next to the pool). */
+  /**
+   * Accounts' own configured Flow sessions (shown next to the pool), including
+   * ones with no credit history and no saved settings: those start from the
+   * editable defaults.
+   */
   others(): PoolAccount[] {
-    const ids = new Set(
-      (
-        this.#db.prepare('SELECT pool_bundle_id AS id FROM flow_credit_events UNION SELECT bundle_id AS id FROM flow_pool_settings').all() as Array<{ id: string }>
-      ).map((r) => r.id),
-    );
     return this.#bundles
       .list()
-      .filter((b) => b.mode !== 'flow_pool' && ids.has(b.id) && this.#flowSessionOf(b.id))
+      .filter((b) => b.mode !== 'flow_pool' && this.#flowSessionOf(b.id))
       .map((b) => this.account(b.id));
   }
 

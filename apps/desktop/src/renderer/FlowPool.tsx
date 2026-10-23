@@ -3,7 +3,8 @@ import { bridge, describeError, describeField, type PoolAccount } from './bridge
 import { Badge } from './Badge.js';
 
 // Flow pool (F0): Flow-only Google accounts supplying generation credits to
-// both factories. Each has its own proxy and Google Flow session. Credits are
+// both factories, plus every account's own configured Flow session (with or
+// without credit history). Each has its own proxy and Google Flow session. Credits are
 // this app's estimate (allowance minus videos downloaded since the reset);
 // Google Flow's own counter is authoritative, so you can correct it here.
 
@@ -56,13 +57,18 @@ export function FlowPool(props: { onBack: () => Promise<void>; onEdit: (id: stri
           )}
         </div>
       )}
-      {rows && rows.length === 0 && <p className="muted">No Flow pool accounts yet.</p>}
-      {rows && rows.length > 0 && (
+      {rows && rows.length === 0 && others.length === 0 && <p className="muted">No Flow accounts yet: no pool account, and no account has a configured Google Flow session.</p>}
+      {rows && rows.length + others.length > 0 && (
         <>
           <div className="summary" data-testid="pool-summary">
             <span>
               <strong>{rows.length}</strong> pool account{rows.length === 1 ? '' : 's'}
             </span>
+            {others.length > 0 && (
+              <span>
+                <strong>{others.length}</strong> own Flow session{others.length === 1 ? '' : 's'}
+              </span>
+            )}
             <span>
               <strong>
                 {totals.remaining.toLocaleString()} / {totals.monthly.toLocaleString()}
@@ -87,7 +93,10 @@ export function FlowPool(props: { onBack: () => Promise<void>; onEdit: (id: stri
               ))}
             </tbody>
           </table>
-          <p className="muted small">Rows marked “own session” are accounts’ own Flow sessions that have rendered clips; their credits are tracked the same way.</p>
+          <p className="muted small">
+            Rows marked “own session” are accounts’ own configured Google Flow sessions; their credits are tracked the same way, on that Flow account. Totals above count
+            pool accounts only.
+          </p>
         </>
       )}
     </section>
@@ -122,6 +131,7 @@ function PoolRow(props: { a: PoolAccount; onReload: () => Promise<void>; onNotic
         <div>
           {!a.proxyConfigured && <Badge tone="warn">no proxy</Badge>}
           {!a.flowSessionId && <Badge tone="warn">no Flow session</Badge>}
+          {!a.settingsSaved && <Badge tone="muted">default settings: edit and save</Badge>}
         </div>
       </td>
       <td data-testid="pool-remaining">
@@ -144,7 +154,7 @@ function PoolRow(props: { a: PoolAccount; onReload: () => Promise<void>; onNotic
             value={s.dailyCreditLimit}
             onChange={(e) => setS({ ...s, dailyCreditLimit: e.target.value })}
           />
-          {changed && (
+          {(changed || !a.settingsSaved) && (
             <button
               type="button"
               className="link"
