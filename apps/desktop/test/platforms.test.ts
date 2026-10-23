@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { validatePlatformDefinition } from '@ugc/core';
+import { urlInDomains, validatePlatformDefinition } from '@ugc/core';
 import type { RuntimeConfig } from '../src/main/config.js';
 import { cookieDomainsFor, GOOGLE_FLOW, KALODATA, resolvePlatforms, SHOPEE, TIKTOK } from '../src/main/platforms.js';
 
@@ -25,6 +25,15 @@ describe('built-in platforms', () => {
     expect(KALODATA.cookieDomains).toEqual(['kalodata.com', 'kalowave.com']);
     expect(KALODATA.authorization.basis).toMatch(/4\.1\.8/);
     expect(GOOGLE_FLOW.cookieDomains).toEqual(['google.com', 'labs.google']);
+  });
+
+  it('TikTok product pages that redirect to Tokopedia (Indonesia) may load in the TikTok window; other sites may not', () => {
+    expect(urlInDomains('https://shop-id.tokopedia.com/pdp/1738036526007813729', TIKTOK.navigationDomains)).toBe(true);
+    expect(urlInDomains('https://www.tiktok.com/view/product/1738036526007813729', TIKTOK.navigationDomains)).toBe(true);
+    expect(urlInDomains('https://tokopedia.com.evil.example/pdp/1', TIKTOK.navigationDomains)).toBe(false);
+    expect(urlInDomains('https://www.shopee.co.id/', TIKTOK.navigationDomains)).toBe(false);
+    // Session backup scope is unchanged: only tiktok.com cookies are saved and restored.
+    expect(TIKTOK.cookieDomains).toEqual(['tiktok.com']);
   });
 
   it('real runs: exactly the four platforms', () => {

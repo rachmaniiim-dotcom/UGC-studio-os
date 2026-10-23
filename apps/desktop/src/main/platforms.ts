@@ -31,12 +31,17 @@ export const KALODATA: PlatformDefinition = {
   accountBoundary: 'one_account_per_profile',
 };
 
-/** TikTok (incl. TikTok Shop seller pages on subdomains). Publishing, Showcase and yellow-basket automation are later gates. */
+/**
+ * TikTok (incl. TikTok Shop seller pages on subdomains). In Indonesia, TikTok Shop product pages
+ * (tiktok.com/view/product/<id>) redirect to Tokopedia (shop-id.tokopedia.com/pdp/<id>; observed
+ * 2026-10-23), so the window may follow them there. Session backup stays on tiktok.com cookies.
+ * Publishing, Showcase and yellow-basket automation are later gates.
+ */
 export const TIKTOK: PlatformDefinition = {
   id: 'tiktok',
   displayName: 'TikTok',
   cookieDomains: ['tiktok.com'],
-  navigationDomains: ['tiktok.com'],
+  navigationDomains: ['tiktok.com', 'tokopedia.com'],
   pages: { home: 'https://www.tiktok.com/' },
   ...MANUAL_ONLY('No TikTok automation approved yet (publishing, Showcase, yellow basket are later gates; R-01, R-04)'),
   accountBoundary: 'one_account_per_profile',
