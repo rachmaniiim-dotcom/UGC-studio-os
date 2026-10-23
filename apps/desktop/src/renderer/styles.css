@@ -172,3 +172,7 @@ label.inline { display: inline-flex; gap: 6px; align-items: center; }
 .product-card .actions select { width: auto; }
 .summary label.inline { display: inline-flex; flex-direction: row; gap: 6px; align-items: center; font-weight: 400; }
 .summary input.target { width: 56px; }
+.inline-inputs { display: inline-flex; gap: 4px; align-items: center; }
+input.target.wide-target { width: 80px; }
+.pool input.target { width: 56px; }
+.pool input.target.wide-target { width: 80px; }

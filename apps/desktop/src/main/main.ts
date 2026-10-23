@@ -9,6 +9,7 @@ import { attachFlowDownloads } from './downloads.js';
 import { GenerationService } from './generation.js';
 import { GenerationStore } from './generation-store.js';
 import { AffiliateService } from './affiliate.js';
+import { FlowPoolService } from './flow-pool.js';
 import { GrowthService } from './growth.js';
 import { PromptStudioService } from './prompt-studio.js';
 import { registerIpc } from './ipc.js';
@@ -114,6 +115,8 @@ if (securityCheck) {
       },
       onJobEnded: (job) => studio.jobEnded(job),
     });
+    // Flow session pool (F0): credit ledger for Flow-only Google accounts.
+    const pool = new FlowPoolService(meta, bundles, log, (bundleId) => sessions!.list().find((p) => p.bundleId === bundleId && p.platformId === 'google-flow')?.id ?? null);
     // Prompt Studio (T1): deterministic template engine, no AI service and no network.
     const studio: PromptStudioService = new PromptStudioService({
       meta,
@@ -137,7 +140,10 @@ if (securityCheck) {
           log,
           synthetic: config.synthetic,
           claimPrompt: (bundleId) => studio.claimManualPrompt(bundleId),
-          onEnded: (job) => studio.jobEnded(job),
+          onEnded: (job) => {
+            studio.jobEnded(job);
+            pool.recordDownload(job);
+          },
         });
       }
     };
@@ -161,6 +167,7 @@ if (securityCheck) {
       growth: new GrowthService(meta, bundles, log),
       studio,
       affiliate: new AffiliateService(meta, bundles, log),
+      pool,
     });
     mainWindow = createMainWindow(join(here, '..', 'preload', 'preload.cjs'), config.synthetic, log);
     mainWindow.on('closed', () => (mainWindow = null));

@@ -4,12 +4,13 @@ import { bridge, describeError, type Account, type PlatformInfo, type Session } 
 import { Dashboard } from './Dashboard.js';
 import { GrowthIntelligence } from './GrowthIntelligence.js';
 import { AffiliateProducts } from './AffiliateProducts.js';
+import { FlowPool } from './FlowPool.js';
 import { ProductionBoard } from './ProductionBoard.js';
 import { PromptStudio } from './PromptStudio.js';
 import { LegacyProfiles } from './LegacyProfiles.js';
 
 // `visit` keeps the editor mounted while a new draft gets its id (so its confirmations stay visible).
-type View = { kind: 'dashboard' } | { kind: 'editor'; accountId: string | null; visit: number } | { kind: 'growth'; accountId: string } | { kind: 'studio'; accountId: string } | { kind: 'board' } | { kind: 'products'; accountId: string };
+type View = { kind: 'dashboard' } | { kind: 'editor'; accountId: string | null; visit: number } | { kind: 'growth'; accountId: string } | { kind: 'studio'; accountId: string } | { kind: 'board' } | { kind: 'products'; accountId: string } | { kind: 'pool' };
 
 export function App(): React.JSX.Element {
   const [view, setView] = useState<View>({ kind: 'dashboard' });
@@ -62,9 +63,18 @@ export function App(): React.JSX.Element {
               onStudio={(id) => setView({ kind: 'studio', accountId: id })}
               onBoard={() => setView({ kind: 'board' })}
               onProducts={(id) => setView({ kind: 'products', accountId: id })}
+              onPool={() => setView({ kind: 'pool' })}
             />
             {legacy && <LegacyProfiles platform={legacy.platform} profiles={legacy.profiles} onChanged={refresh} />}
           </>
+        ) : view.kind === 'pool' ? (
+          <FlowPool
+            onBack={async () => {
+              await refresh();
+              setView({ kind: 'dashboard' });
+            }}
+            onEdit={(id) => openEditor(id)}
+          />
         ) : view.kind === 'products' ? (
           <AffiliateProducts
             account={accounts.find((a) => a.id === view.accountId) ?? null}

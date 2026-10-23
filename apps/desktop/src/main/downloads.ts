@@ -36,8 +36,12 @@ export function attachFlowDownloads(
     jobs: GenerationStore;
     log: Logger;
     synthetic: boolean;
-    /** The prompt the owner took to Flow by hand, if any: the download is linked to it (T1). */
-    claimPrompt?: (bundleId: string) => string | null;
+    /**
+     * The prompt the owner took to this Flow window by hand, if any (T1): the download is linked to it
+     * and saved into the prompt's account library, which differs from this session's account for a
+     * Flow pool account (F0).
+     */
+    claimPrompt?: (flowBundleId: string) => { itemId: string; targetBundleId: string } | null;
     onEnded?: (job: GenerationJob) => void;
   },
 ): void {
@@ -50,9 +54,18 @@ export function attachFlowDownloads(
       deps.log.warn('download_rejected', { bundleId, reason: !isMp4 ? 'not_mp4' : item.getTotalBytes() > MAX_VIDEO_BYTES ? 'too_large' : 'source_not_allowed' });
       return false;
     }
-    const job = deps.jobs.create({ bundleId, source: 'manual_download', providerId: 'google-flow-manual', settings: null, promptItemId: deps.claimPrompt?.(bundleId) ?? null });
+    const claim = deps.claimPrompt?.(bundleId) ?? null;
+    const target = claim?.targetBundleId ?? bundleId;
+    const job = deps.jobs.create({
+      bundleId: target,
+      source: 'manual_download',
+      providerId: 'google-flow-manual',
+      settings: null,
+      promptItemId: claim?.itemId ?? null,
+      flowBundleId: bundleId,
+    });
     deps.jobs.transition(job.id, 'running', { code: 'download_started' });
-    const part = deps.library.partPath(bundleId, job.id);
+    const part = deps.library.partPath(target, job.id);
     item.setSavePath(part);
     item.on('updated', () => {
       if (item.getReceivedBytes() > MAX_VIDEO_BYTES) item.cancel();

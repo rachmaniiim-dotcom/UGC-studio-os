@@ -4,6 +4,7 @@ import {
   describeError,
   describeField,
   type Account,
+  type PoolAccount,
   type PromptActionName,
   type PromptItem,
   type PromptStatus,
@@ -89,13 +90,15 @@ export function PromptStudio(props: { account: Account | null; onBack: () => Pro
     void load();
   }, [load]);
 
-  // While a provider job runs, refresh until it finishes.
-  const busy = view?.batches.some((b) => b.items.some((i) => i.status === 'generating' && i.handoff === 'provider')) ?? false;
+  // While a video is on its way (a provider job, or a download in a Flow window), refresh until it arrives.
+  const waiting = view?.batches.flatMap((b) => b.items).filter((i) => i.status === 'generating') ?? [];
+  const busy = waiting.length > 0;
+  const interval = waiting.some((i) => i.handoff === 'provider') ? 700 : 1500;
   useEffect(() => {
     if (!busy) return;
-    const t = setInterval(() => void load(), 700);
+    const t = setInterval(() => void load(), interval);
     return () => clearInterval(t);
-  }, [busy, load]);
+  }, [busy, interval, load]);
 
   if (!account) return <p className="muted">Account not found.</p>;
   const template = view?.templates.find((t) => t.template.key === selected)?.template ?? view?.templates[0]?.template;
@@ -469,6 +472,10 @@ function ConsistencyField(props: {
 function PromptList(props: { bundleId: string; view: StudioView; onView: (v: StudioView) => void }): React.JSX.Element {
   const [filter, setFilter] = useState<'all' | PromptStatus>('all');
   const [notice, setNotice] = useState<Notice>(null);
+  const [pool, setPool] = useState<PoolAccount[]>([]);
+  useEffect(() => {
+    void bridge.flowPool().then((r) => r.ok && setPool(r.data));
+  }, [props.view]);
   const act = async (itemId: string, action: PromptActionName): Promise<boolean> => {
     const r = await bridge.promptAction(props.bundleId, itemId, action);
     if (!r.ok) {
@@ -515,7 +522,7 @@ function PromptList(props: { bundleId: string; view: StudioView; onView: (v: Stu
               {b.templateName} v{b.templateVersion} · {new Date(b.createdAt).toLocaleString()} · {b.items.length} of {b.requested} prompts · generator: {b.providerId}
             </div>
             {items.map((i) => (
-              <PromptCard key={`${i.id}:${i.updatedAt}`} bundleId={props.bundleId} item={i} view={props.view} onAct={act} onView={props.onView} onNotice={setNotice} />
+              <PromptCard key={`${i.id}:${i.updatedAt}`} bundleId={props.bundleId} item={i} view={props.view} pool={pool} onAct={act} onView={props.onView} onNotice={setNotice} />
             ))}
           </div>
         );
@@ -528,6 +535,7 @@ function PromptCard(props: {
   bundleId: string;
   item: PromptItem;
   view: StudioView;
+  pool: PoolAccount[];
   onAct: (id: string, action: PromptActionName) => Promise<boolean>;
   onView: (v: StudioView) => void;
   onNotice: (n: Notice) => void;
@@ -679,7 +687,21 @@ function PromptCard(props: {
               <button type="button" onClick={() => void copy()}>
                 {copied ? 'Copied ✓' : 'Copy prompt for Flow'}
               </button>
-              <button type="button" className="primary" onClick={() => void props.onAct(i.id, 'start_manual')}>
+              {props.pool.length > 0 && (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={async () => {
+                    const r = await bridge.takePromptToPool(props.bundleId, i.id, null);
+                    if (!r.ok) return props.onNotice(errNotice(r.error));
+                    props.onNotice(null);
+                    props.onView(r.data.view);
+                  }}
+                >
+                  Generate in Flow pool
+                </button>
+              )}
+              <button type="button" className={props.pool.length > 0 ? '' : 'primary'} onClick={() => void props.onAct(i.id, 'start_manual')}>
                 I’m generating it in Flow
               </button>
               {props.view.videoProvider.available &&
@@ -709,7 +731,9 @@ function PromptCard(props: {
               <span className="small muted">
                 {i.handoff === 'provider'
                   ? `Generating with ${props.view.videoProvider.label ?? 'the provider'}…`
-                  : 'Waiting for the video: download it in this account’s Google Flow window and it will be linked here automatically.'}
+                  : i.flowBundleId
+                    ? `Waiting for the video from Flow pool account “${props.pool.find((a) => a.id === i.flowBundleId)?.displayName ?? 'pool'}”: the prompt is on your clipboard; generate and download it in that window and it comes back here.`
+                    : 'Waiting for the video: download it in this account’s Google Flow window and it will be linked here automatically.'}
               </span>
               {i.handoff === 'manual' && (
                 <>

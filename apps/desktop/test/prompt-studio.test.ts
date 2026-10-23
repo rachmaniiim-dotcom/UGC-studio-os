@@ -168,19 +168,19 @@ describe('prompt studio (SQLite, synthetic)', () => {
     expect(studio.view(bundle.id).counts).toMatchObject({ generating: 1, video_ready: 0 });
 
     // Manual Flow download: the download handler claims the waiting prompt; a failed download keeps it waiting.
-    expect(studio.claimManualPrompt(bundle.id)).toBe(a!.id);
+    expect(studio.claimManualPrompt(bundle.id)).toEqual({ itemId: a!.id, targetBundleId: bundle.id });
     const failed = jobs.create({ bundleId: bundle.id, source: 'manual_download', providerId: 'google-flow-manual', settings: null, promptItemId: a!.id });
     jobs.transition(failed.id, 'running');
     studio.jobEnded(jobs.transition(failed.id, 'failed', { errorCode: 'cancelled' }));
     expect(studio.view(bundle.id).batches[0]!.items[0]).toMatchObject({ status: 'generating', lastError: 'manual_download_failed' });
-    const job = jobs.create({ bundleId: bundle.id, source: 'manual_download', providerId: 'google-flow-manual', settings: null, promptItemId: studio.claimManualPrompt(bundle.id) });
+    const job = jobs.create({ bundleId: bundle.id, source: 'manual_download', providerId: 'google-flow-manual', settings: null, promptItemId: studio.claimManualPrompt(bundle.id)?.itemId ?? null });
     jobs.transition(job.id, 'running');
     expect(studio.claimManualPrompt(bundle.id)).toBeNull(); // already being downloaded
     studio.jobEnded(jobs.transition(job.id, 'completed', { video: { file: `library/${bundle.id}/${job.id}.mp4`, bytes: 10, sha256: 'a'.repeat(64) } }));
     expect(studio.view(bundle.id).batches[0]!.items[0]).toMatchObject({ status: 'video_ready', video: { jobId: job.id } });
 
     // A download without a waiting prompt stays unlinked (manual downloads keep working) and can be linked by hand.
-    const loose = jobs.create({ bundleId: bundle.id, source: 'manual_download', providerId: 'google-flow-manual', settings: null, promptItemId: studio.claimManualPrompt(bundle.id) });
+    const loose = jobs.create({ bundleId: bundle.id, source: 'manual_download', providerId: 'google-flow-manual', settings: null, promptItemId: studio.claimManualPrompt(bundle.id)?.itemId ?? null });
     expect(loose.promptItemId).toBeNull();
     jobs.transition(loose.id, 'running');
     jobs.transition(loose.id, 'completed', { video: { file: `library/${bundle.id}/${loose.id}.mp4`, bytes: 10, sha256: 'b'.repeat(64) } });

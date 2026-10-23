@@ -53,6 +53,11 @@ contextBridge.exposeInMainWorld(
     undoPosted: (bundleId: string, itemId: string) => ipcRenderer.invoke('studio:undo-posted', { bundleId, itemId }),
     productionBoard: () => ipcRenderer.invoke('studio:board', {}),
     setDailyTarget: (bundleId: string, target: number) => ipcRenderer.invoke('studio:set-target', { bundleId, target }),
+    // Flow session pool (F0)
+    flowPool: () => ipcRenderer.invoke('pool:list', {}),
+    savePoolSettings: (bundleId: string, settings: unknown) => ipcRenderer.invoke('pool:save-settings', { bundleId, settings }),
+    setPoolRemaining: (bundleId: string, remaining: number) => ipcRenderer.invoke('pool:set-remaining', { bundleId, remaining }),
+    takePromptToPool: (bundleId: string, itemId: string, poolId: string | null) => ipcRenderer.invoke('studio:take-to-pool', { bundleId, itemId, poolId }),
     // Affiliate Products (A1)
     affiliateView: (bundleId: string) => ipcRenderer.invoke('affiliate:view', { bundleId }),
     addAffiliateProducts: (bundleId: string, text: string) => ipcRenderer.invoke('affiliate:add-text', { bundleId, text }),

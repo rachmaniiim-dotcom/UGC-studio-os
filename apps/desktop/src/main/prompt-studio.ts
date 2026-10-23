@@ -116,6 +116,8 @@ export interface PromptItem {
   readonly manualSteps: readonly string[];
   readonly references: ReadonlyArray<{ id: string; name: string; kind: ReferenceKind; available: boolean }>;
   readonly handoff: 'provider' | 'manual' | null;
+  /** The Flow pool account the prompt was taken to, if any. */
+  readonly flowBundleId: string | null;
   readonly jobId: string | null;
   readonly lastError: string | null;
   readonly video: { jobId: string; file: string } | null;
@@ -185,6 +187,7 @@ interface ItemRow {
   duplicates_json: string;
   handoff: 'provider' | 'manual' | null;
   job_id: string | null;
+  flow_bundle_id: string | null;
   last_error: string | null;
   created_at: string;
   updated_at: string;
@@ -459,7 +462,7 @@ export class PromptStudioService {
     }
     const handoff = action === 'start_manual' ? 'manual' : rule.to === 'generating' ? item.handoff : null;
     this.#db
-      .prepare('UPDATE prompt_items SET status = ?, handoff = ?, job_id = ?, last_error = ?, updated_at = ? WHERE id = ?')
+      .prepare('UPDATE prompt_items SET status = ?, handoff = ?, job_id = ?, flow_bundle_id = NULL, last_error = ?, updated_at = ? WHERE id = ?')
       .run(rule.to, handoff, rule.to === 'generating' ? item.job_id : null, null, this.#iso(), itemId);
     if (action === 'reject' || action === 'reopen') this.#refreshFlags(item.batch_id);
     this.#deps.log.info('prompt_status_changed', { bundleId, itemId, action });
@@ -503,15 +506,29 @@ export class PromptStudioService {
   }
 
   /** For the Flow download handler: the oldest prompt the owner took to Flow by hand and is still waiting for its video. */
-  claimManualPrompt(bundleId: string): string | null {
+  claimManualPrompt(flowBundleId: string): { itemId: string; targetBundleId: string } | null {
+    // A prompt taken to a Flow pool account is claimed by that account's window; otherwise by the account's own Flow window.
     const row = this.#db
       .prepare(
-        `SELECT id FROM prompt_items i WHERE bundle_id = ? AND status = 'generating' AND handoff = 'manual'
+        `SELECT id, bundle_id FROM prompt_items i WHERE status = 'generating' AND handoff = 'manual'
+         AND (flow_bundle_id = ? OR (bundle_id = ? AND flow_bundle_id IS NULL))
          AND NOT EXISTS (SELECT 1 FROM generation_jobs j WHERE j.prompt_item_id = i.id AND j.state IN ('pending', 'running'))
          ORDER BY updated_at, rowid LIMIT 1`,
       )
-      .get(bundleId) as { id: string } | undefined;
-    return row?.id ?? null;
+      .get(flowBundleId, flowBundleId) as { id: string; bundle_id: string } | undefined;
+    return row ? { itemId: row.id, targetBundleId: row.bundle_id } : null;
+  }
+
+  /** Takes a queued prompt to a Flow pool account's window (F0); its download comes back to this account. */
+  takeToPool(bundleId: string, itemId: string, poolBundleId: string): string {
+    this.#requireGrowth(bundleId);
+    const item = this.#item(bundleId, itemId);
+    if (item.status !== 'queued') throw new StudioError('prompt_action_not_allowed');
+    this.#db
+      .prepare("UPDATE prompt_items SET status = 'generating', handoff = 'manual', job_id = NULL, flow_bundle_id = ?, last_error = NULL, updated_at = ? WHERE id = ?")
+      .run(poolBundleId, this.#iso(), itemId);
+    this.#deps.log.info('prompt_taken_to_flow_pool', { bundleId, itemId, pool: poolBundleId });
+    return item.rendered;
   }
 
   /** A job linked to a prompt ended: a real video makes it "video ready"; a failed provider job returns it to the queue. */
@@ -801,6 +818,7 @@ export class PromptStudioService {
         manualSteps: steps,
         references,
         handoff: r.handoff,
+        flowBundleId: r.flow_bundle_id ?? null,
         jobId: r.job_id,
         lastError: r.last_error,
         video: r.status === 'video_ready' && job?.videoFile ? { jobId: job.id, file: job.videoFile } : null,

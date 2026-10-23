@@ -47,6 +47,7 @@ export {
 } from './proxy/config.js';
 export {
   BUNDLE_PLATFORMS,
+  platformsForMode,
   PRODUCTION_MODES,
   bundleStatus,
   validateAccountInput,

@@ -62,7 +62,7 @@ export interface ProxyState {
   error: string | null;
 }
 
-export type Mode = 'affiliate_ugc' | 'account_growth';
+export type Mode = 'affiliate_ugc' | 'account_growth' | 'flow_pool';
 
 export interface VideoSettings {
   aspectRatio: '9:16' | '16:9' | '1:1';
@@ -214,6 +214,7 @@ export interface PromptItem {
   manualSteps: string[];
   references: Array<{ id: string; name: string; kind: 'image' | 'video'; available: boolean }>;
   handoff: 'provider' | 'manual' | null;
+  flowBundleId: string | null;
   jobId: string | null;
   lastError: string | null;
   video: { jobId: string; file: string } | null;
@@ -255,6 +256,18 @@ export interface AffiliateView {
   today: string;
   dailyLimit: number;
   selectedToday: number;
+}
+
+export interface PoolAccount {
+  id: string;
+  displayName: string;
+  settings: { monthlyCredits: number; resetDay: number; creditsPerDownload: number };
+  periodStart: string;
+  used: number;
+  remaining: number;
+  downloadsThisPeriod: number;
+  proxyConfigured: boolean;
+  flowSessionId: string | null;
 }
 
 export interface BoardRow {
@@ -373,6 +386,10 @@ interface UgcBridge {
   undoPosted(bundleId: string, itemId: string): Promise<Result<StudioView>>;
   productionBoard(): Promise<Result<BoardRow[]>>;
   setDailyTarget(bundleId: string, target: number): Promise<Result<BoardRow[]>>;
+  flowPool(): Promise<Result<PoolAccount[]>>;
+  savePoolSettings(bundleId: string, settings: PoolAccount['settings']): Promise<Result<PoolAccount[]>>;
+  setPoolRemaining(bundleId: string, remaining: number): Promise<Result<PoolAccount[]>>;
+  takePromptToPool(bundleId: string, itemId: string, poolId: string | null): Promise<Result<{ poolId: string; view: StudioView }>>;
   affiliateView(bundleId: string): Promise<Result<AffiliateView>>;
   addAffiliateProducts(bundleId: string, text: string): Promise<Result<{ result: { added: string[]; existing: string[]; rejected: Array<{ line: number; input: string; issue: string }> }; view: AffiliateView }>>;
   captureProductFromResearch(bundleId: string): Promise<Result<{ productId: string; outcome: 'added' | 'existing'; view: AffiliateView }>>;
@@ -399,6 +416,7 @@ export const bridge = (window as unknown as { ugc: UgcBridge }).ugc;
 export const MODE_LABELS: Record<Mode, string> = {
   affiliate_ugc: 'Affiliate UGC',
   account_growth: 'Account Growth (Ternak Akun)',
+  flow_pool: 'Flow pool (Google Flow credits only)',
 };
 
 export const ACCOUNT_STATUS: Record<Account['status'], { label: string; tone: 'muted' | 'warn' | 'ok' | 'bad' }> = {
@@ -476,6 +494,10 @@ const MESSAGES: Record<string, [message: string, recovery: string]> = {
   invalid_preset: ['The preset can’t be saved.', 'Give it a name and a description (max 2,000 characters).'],
   invalid_post_link: ['That isn’t a TikTok video link.', 'Paste the full link of your post (https://www.tiktok.com/@you/video/…) or leave it empty.'],
   invalid_target: ['The daily target must be a whole number from 1 to 50.', 'Enter a number and save again.'],
+  not_pool_account: ['That isn’t a Flow pool account.', 'Choose an account created as “Flow pool”.'],
+  invalid_pool_settings: ['Some credit settings are invalid.', 'Fix the fields listed below.'],
+  invalid_credit_balance: ['That balance isn’t valid.', 'Enter the remaining credits Google Flow shows (a whole number).'],
+  no_pool_account_available: ['No Flow pool account can take this prompt.', 'Add a Flow pool account with a proxy and a Google Flow session, or check its remaining credits.'],
   not_affiliate_account: ['Affiliate Products is only for Affiliate UGC accounts.', 'Open it from an affiliate account.'],
   unknown_product: ['That product no longer exists.', 'Refresh the screen.'],
   invalid_product_list: ['Nothing to add.', 'Paste 1–200 TikTok product links or IDs, one per line.'],
@@ -563,6 +585,10 @@ const FIELD_MESSAGES: Record<string, string> = {
   content_mismatch: 'The file’s content doesn’t match its extension.',
   reference_too_large: 'Reference files can be up to 200 MB.',
   invalid_title: 'Title: up to 200 characters.',
+  invalid_monthly_credits: 'Monthly credits: a whole number, e.g. 1050 for Google AI Pro.',
+  invalid_reset_day: 'Reset day: 1–28 (the day of the month your credits renew).',
+  invalid_credits_per_download: 'Credits per video: a whole number, e.g. 12 for an 8-second Omni Flash clip.',
+  mode_change_not_allowed: 'A Flow pool account can’t be switched to a factory mode (or back): create a new account instead.',
   invalid_shop: 'Shop name: up to 100 characters.',
   invalid_price: 'Price: a whole number of rupiah, e.g. 89000 or 89.000.',
   invalid_commission: 'Commission: a percentage from 0 to 80, e.g. 12 or 12,5.',

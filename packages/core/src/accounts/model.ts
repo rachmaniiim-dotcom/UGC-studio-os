@@ -6,8 +6,13 @@ import type { SessionStatus } from '../session/status.js';
  * future Linux worker shares the same model.
  */
 
-export type ProductionMode = 'affiliate_ugc' | 'account_growth';
-export const PRODUCTION_MODES: readonly ProductionMode[] = ['affiliate_ugc', 'account_growth'];
+/**
+ * affiliate_ugc and account_growth are the two factories. flow_pool is a
+ * Flow-only Google account that supplies generation credits to either
+ * factory (F0): its own proxy and one Google Flow session, no TikTok.
+ */
+export type ProductionMode = 'affiliate_ugc' | 'account_growth' | 'flow_pool';
+export const PRODUCTION_MODES: readonly ProductionMode[] = ['affiliate_ugc', 'account_growth', 'flow_pool'];
 
 /** Platforms each bundle gets a session for. `optional` sessions don't count against readiness. */
 export const BUNDLE_PLATFORMS = [
@@ -17,6 +22,10 @@ export const BUNDLE_PLATFORMS = [
   { id: 'shopee', optional: true },
 ] as const;
 export type BundlePlatformId = (typeof BUNDLE_PLATFORMS)[number]['id'];
+
+/** The sessions a bundle of this mode gets: a Flow pool account has only Google Flow. */
+export const platformsForMode = (mode: ProductionMode): ReadonlyArray<{ readonly id: BundlePlatformId; readonly optional: boolean }> =>
+  mode === 'flow_pool' ? BUNDLE_PLATFORMS.filter((p) => p.id === 'google-flow') : BUNDLE_PLATFORMS;
 
 /**
  * - draft: the proxy is missing or has never passed Test Proxy; no external website can be opened.

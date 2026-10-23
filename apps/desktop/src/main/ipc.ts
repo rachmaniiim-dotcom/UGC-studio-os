@@ -1,11 +1,11 @@
 import { BrowserWindow as Windows, clipboard, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import { readFile, stat } from 'node:fs/promises';
 import {
-  BUNDLE_PLATFORMS,
   DEFAULT_MAX_BYTES,
   bundleStatus,
   importCookieEditorExport,
   oversizedFileResult,
+  platformsForMode,
   PROMPT_ACTIONS,
   SHOWCASE_PAGE_URL,
   urlInDomains,
@@ -23,6 +23,7 @@ import { replaceCookies, type LoadResult } from './electron-cookies.js';
 import { cookieEncryptionFuseEnabled } from './fuses.js';
 import { GenerationError, type GenerationService } from './generation.js';
 import { AffiliateError, type AffiliateService } from './affiliate.js';
+import { PoolError, type FlowPoolService } from './flow-pool.js';
 import { GrowthError, type GrowthService } from './growth.js';
 import { StudioError, type PromptStudioService } from './prompt-studio.js';
 import type { GenerationJob, GenerationStore } from './generation-store.js';
@@ -92,6 +93,10 @@ export type IpcErrorCode =
   | 'no_product_in_address'
   | 'no_research_window'
   | 'session_not_configured'
+  | 'not_pool_account'
+  | 'invalid_pool_settings'
+  | 'invalid_credit_balance'
+  | 'no_pool_account_available'
   | 'internal_error';
 
 /** `details` carries sanitized issue codes (e.g. which field is invalid), never input values. */
@@ -125,6 +130,7 @@ export interface IpcDeps {
   readonly growth: GrowthService;
   readonly studio: PromptStudioService;
   readonly affiliate: AffiliateService;
+  readonly pool: FlowPoolService;
 }
 
 /** What the UI may know about a platform. */
@@ -220,6 +226,7 @@ export function registerIpc({
   growth,
   studio,
   affiliate,
+  pool,
 }: IpcDeps): void {
   const devTools = config.synthetic;
   const platformOf = (profile: PocProfile): PlatformDefinition | undefined => platforms.get(profile.platformId);
@@ -290,6 +297,15 @@ export function registerIpc({
       return await run();
     } catch (err) {
       if (err instanceof ProxyError) throw new IpcError(err.code as IpcErrorCode, err.details);
+      throw err;
+    }
+  };
+
+  const poolCall = <T>(run: () => T): T => {
+    try {
+      return run();
+    } catch (err) {
+      if (err instanceof PoolError) throw new IpcError(err.code, err.details);
       throw err;
     }
   };
@@ -412,7 +428,7 @@ export function registerIpc({
       const request = requireObject(payload, ['displayName', 'mode']);
       const valid = validateAccountInput({ displayName: request['displayName'], mode: request['mode'] });
       if (!valid.ok) throw new IpcError('invalid_account', valid.issues);
-      const specs = BUNDLE_PLATFORMS.flatMap(({ id, optional }) => {
+      const specs = platformsForMode(valid.value.mode).flatMap(({ id, optional }) => {
         const platform = platforms.get(id);
         return platform ? [{ platformId: id, label: platform.displayName, optional }] : [];
       });
@@ -431,6 +447,8 @@ export function registerIpc({
       const bundle = requireBundle(request);
       const valid = validateAccountInput({ displayName: request['displayName'], mode: request['mode'] });
       if (!valid.ok) throw new IpcError('invalid_account', valid.issues);
+      // A Flow pool account has different sessions (Google Flow only), so it can't switch to or from a factory mode.
+      if (valid.value.mode !== bundle.mode && (valid.value.mode === 'flow_pool' || bundle.mode === 'flow_pool')) throw new IpcError('invalid_account', ['mode_change_not_allowed']);
       return viewOf(bundles.update(bundle.id, valid.value));
     },
 
@@ -811,6 +829,44 @@ export function registerIpc({
         studio.deletePreset(presetId);
         return studio.view(bundle.id);
       });
+    },
+
+    // ---- Flow session pool (F0): Flow-only Google accounts supplying generation credits ----
+
+    'pool:list': async () => poolCall(() => pool.list()),
+
+    'pool:save-settings': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'settings']);
+      const bundle = requireBundle(request);
+      return poolCall(() => {
+        pool.saveSettings(bundle.id, request['settings']);
+        return pool.list();
+      });
+    },
+
+    'pool:set-remaining': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'remaining']);
+      const bundle = requireBundle(request);
+      return poolCall(() => {
+        pool.setRemaining(bundle.id, request['remaining']);
+        return pool.list();
+      });
+    },
+
+    // Takes a queued prompt to a Flow pool account: prompt on the clipboard, that account's Flow window
+    // opened (its own proxy). The owner generates and downloads there; the video comes back to this account.
+    'studio:take-to-pool': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'itemId', 'poolId']);
+      const bundle = requireBundle(request);
+      const itemId = requireId(request, 'itemId');
+      const poolId = request['poolId'] === null ? null : requireId(request, 'poolId');
+      const target = poolCall(() => (poolId ? pool.account(poolId) : pool.pick()));
+      const profile = bundleProfile(target.id, 'google-flow');
+      await requireNetworkReady(profile);
+      const text = studioCall(() => studio.takeToPool(bundle.id, itemId, target.id));
+      clipboard.writeText(text);
+      await openInAccount(target.id, 'google-flow', platformOf(profile)!.pages['home']!, 'Flow');
+      return { poolId: target.id, view: studio.view(bundle.id) };
     },
 
     // ---- Affiliate Products (A1): product IDs, today's selection, assisted Showcase ----

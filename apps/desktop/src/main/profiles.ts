@@ -104,7 +104,14 @@ export const PROFILE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{
 const PARTITION = /^persist:ps_[0-9a-f-]{36}$/;
 const PLATFORM_ID = /^[a-z][a-z0-9-]{1,31}$/;
 
-const MIGRATIONS: readonly string[] = [
+/**
+ * A migration is SQL run in one transaction. A table rebuild (SQLite can't
+ * alter a CHECK constraint) needs foreign-key enforcement paused around the
+ * transaction, then a foreign_key_check before it is turned back on.
+ */
+type Migration = string | { readonly sql: string; readonly foreignKeysOff: true };
+
+export const MIGRATIONS: readonly Migration[] = [
   `CREATE TABLE account_bundles (
      id TEXT PRIMARY KEY,
      display_name TEXT NOT NULL,
@@ -295,6 +302,40 @@ const MIGRATIONS: readonly string[] = [
      UNIQUE (bundle_id, platform_product_id)
    );
    ALTER TABLE production_targets ADD COLUMN daily_products INTEGER;`,
+  // F0 (Flow session pool): a third account kind, flow_pool (a Flow-only Google account with its
+  // own proxy), its credit settings and ledger, and which pool account produced a video or holds a prompt.
+  {
+    foreignKeysOff: true,
+    sql: `CREATE TABLE account_bundles_new (
+     id TEXT PRIMARY KEY,
+     display_name TEXT NOT NULL,
+     mode TEXT NOT NULL CHECK (mode IN ('affiliate_ugc', 'account_growth', 'flow_pool')),
+     proxy_json TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   INSERT INTO account_bundles_new (id, display_name, mode, proxy_json, created_at, updated_at)
+     SELECT id, display_name, mode, proxy_json, created_at, updated_at FROM account_bundles;
+   DROP TABLE account_bundles;
+   ALTER TABLE account_bundles_new RENAME TO account_bundles;
+   CREATE TABLE flow_pool_settings (
+     bundle_id TEXT PRIMARY KEY REFERENCES account_bundles(id),
+     monthly_credits INTEGER NOT NULL CHECK (monthly_credits BETWEEN 1 AND 1000000),
+     reset_day INTEGER NOT NULL CHECK (reset_day BETWEEN 1 AND 28),
+     credits_per_download INTEGER NOT NULL CHECK (credits_per_download BETWEEN 1 AND 10000),
+     updated_at TEXT NOT NULL
+   );
+   CREATE TABLE flow_credit_events (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     pool_bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     at TEXT NOT NULL,
+     credits INTEGER NOT NULL,
+     reason TEXT NOT NULL CHECK (reason IN ('download', 'adjust')),
+     job_id TEXT UNIQUE
+   );
+   ALTER TABLE generation_jobs ADD COLUMN flow_bundle_id TEXT;
+   ALTER TABLE prompt_items ADD COLUMN flow_bundle_id TEXT;`,
+  },
 ];
 
 export class MetadataDb {
@@ -308,17 +349,23 @@ export class MetadataDb {
     db.exec('PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;');
     db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)');
     const applied = new Set((db.prepare('SELECT version FROM schema_migrations').all() as Array<{ version: number }>).map((r) => r.version));
-    MIGRATIONS.forEach((sql, i) => {
+    MIGRATIONS.forEach((migration, i) => {
       const version = i + 1;
       if (applied.has(version)) return;
+      const sql = typeof migration === 'string' ? migration : migration.sql;
+      const pauseForeignKeys = typeof migration !== 'string' && migration.foreignKeysOff;
+      if (pauseForeignKeys) db.exec('PRAGMA foreign_keys = OFF');
       db.exec('BEGIN');
       try {
         db.exec(sql);
+        if (pauseForeignKeys && (db.prepare('PRAGMA foreign_key_check').all() as unknown[]).length > 0) throw new Error(`migration ${version} broke foreign keys`);
         db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(version, new Date().toISOString());
         db.exec('COMMIT');
       } catch (err) {
         db.exec('ROLLBACK');
         throw err;
+      } finally {
+        if (pauseForeignKeys) db.exec('PRAGMA foreign_keys = ON');
       }
     });
     const store = new MetadataDb(db);
