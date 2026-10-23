@@ -1,6 +1,6 @@
 import electron = require('electron');
 
-const { contextBridge, ipcRenderer } = electron;
+const { contextBridge, ipcRenderer, webUtils } = electron;
 
 // The only bridge into privileged code: fixed channels, fixed argument shapes.
 // No generic invoke(), no ipcRenderer, no Node APIs. Secrets only flow in
@@ -92,6 +92,22 @@ contextBridge.exposeInMainWorld(
     setProductEligibility: (bundleId: string, id: string, state: string) => ipcRenderer.invoke('affiliate:set-eligibility', { bundleId, id, state }),
     openProductPage: (bundleId: string, id: string) => ipcRenderer.invoke('affiliate:open-product', { bundleId, id }),
     fillProductFromListing: (bundleId: string, id: string, usePhoto: boolean) => ipcRenderer.invoke('affiliate:autofill', { bundleId, id, usePhoto }),
+    // Ternak Akun posting queue (G1)
+    postingQueue: (bundleId: string) => ipcRenderer.invoke('gq:view', { bundleId }),
+    chooseQueueVideos: (bundleId: string, folder: boolean) => ipcRenderer.invoke('gq:choose-videos', { bundleId, folder }),
+    // Dropped files: only their local paths cross to the main process, which accepts .mp4 files only.
+    importDroppedVideos: (bundleId: string, files: File[]) =>
+      ipcRenderer.invoke('gq:import-paths', { bundleId, paths: Array.from(files ?? []).slice(0, 200).map((f) => webUtils.getPathForFile(f)) }),
+    queueItemAction: (bundleId: string, id: string, action: string, extra: { note?: string; postUrl?: string; caption?: string; hashtags?: string[] } = {}) =>
+      ipcRenderer.invoke('gq:item-action', { bundleId, id, action, note: extra.note ?? null, postUrl: extra.postUrl ?? null, caption: extra.caption ?? null, hashtags: extra.hashtags ?? null }),
+    retryQueueAnalysis: (bundleId: string) => ipcRenderer.invoke('gq:retry-failed', { bundleId }),
+    openTikTokUpload: (bundleId: string, id: string) => ipcRenderer.invoke('gq:open-upload', { bundleId, id }),
+    addFypReferences: (bundleId: string, rightsConfirmed: boolean) => ipcRenderer.invoke('gq:add-references', { bundleId, rightsConfirmed }),
+    analyzeFypReferences: (bundleId: string, assetIds: string[], note: string) => ipcRenderer.invoke('gq:analyze-references', { bundleId, assetIds, note }),
+    makeFypVariations: (bundleId: string, referenceId: string, count: number) => ipcRenderer.invoke('gq:make-variations', { bundleId, referenceId, count }),
+    analysisStatus: () => ipcRenderer.invoke('ai:status'),
+    saveAnalysisSettings: (settings: unknown, apiKey: string) => ipcRenderer.invoke('ai:save', { settings, apiKey }),
+    removeAnalysisKey: () => ipcRenderer.invoke('ai:remove-key'),
     openShowcasePage: (bundleId: string, id: string) => ipcRenderer.invoke('affiliate:open-showcase', { bundleId, id }),
     showcaseAction: (bundleId: string, id: string, action: string) => ipcRenderer.invoke('affiliate:showcase', { bundleId, id, action }),
     // Platform sessions

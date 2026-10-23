@@ -9,6 +9,8 @@ import {
   contentFlags,
   defaultConfig,
   EDITABLE_STATUSES,
+  FYP_VARIATION_TEMPLATE,
+  fypVariationConfig,
   looksLikeMp4,
   manualSteps,
   nearDuplicates,
@@ -389,6 +391,64 @@ export class PromptStudioService {
     }
     this.#deps.log.info('prompt_batch_generated', { bundleId, batchId, template: t.key, version: t.version, requested: config.count, created: planned.length, provider: this.#deps.provider.descriptor.id });
     return this.#batchView(this.#batchRow(batchId)!);
+  }
+
+  /**
+   * G1: original prompts written from an FYP reference breakdown join the
+   * production queue as one batch, already queued, so they go to Flow with
+   * the existing workflow (copy, generate in Flow, download).
+   */
+  addVariationBatch(bundleId: string, referenceId: string, variations: ReadonlyArray<{ hook: string; scene: string; action: string; style: string; audio: string; caption: string }>): PromptBatch {
+    this.#requireGrowth(bundleId);
+    const t = FYP_VARIATION_TEMPLATE;
+    const config = fypVariationConfig(Math.max(1, variations.length));
+    const batchId = randomUUID();
+    const now = this.#iso();
+    this.#db.exec('BEGIN');
+    try {
+      this.#db
+        .prepare(
+          `INSERT INTO prompt_batches (id, bundle_id, template_key, template_version, template_json, config_json, assets_json, provider_id, seed, requested, shortfall, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, '[]', 'fyp-analysis', ?, ?, NULL, ?)`,
+        )
+        .run(batchId, bundleId, t.key, t.version, JSON.stringify(t), JSON.stringify(config), referenceId, variations.length, now);
+      variations.forEach((v, i) => {
+        const axes = { reference: referenceId.slice(0, 8), idea: String(i + 1) };
+        const slots = { scene: v.scene, hook: v.hook, action: v.action, style: v.style, audio: v.audio, caption_line: v.caption };
+        const content = renderContent(t, config, axes, slots);
+        this.#db
+          .prepare(
+            `INSERT INTO prompt_items (id, batch_id, bundle_id, position, axes_json, slots_json, content_json, rendered, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+          )
+          .run(randomUUID(), batchId, bundleId, i + 1, JSON.stringify(axes), JSON.stringify(slots), JSON.stringify(content), renderText(content), now, now);
+      });
+      this.#refreshFlags(batchId);
+      this.#db.exec('COMMIT');
+    } catch (err) {
+      this.#db.exec('ROLLBACK');
+      throw err;
+    }
+    this.#deps.log.info('prompt_batch_generated', { bundleId, batchId, template: t.key, version: t.version, requested: variations.length, created: variations.length, provider: 'fyp-analysis' });
+    return this.#batchView(this.#batchRow(batchId)!);
+  }
+
+  /** Earlier hooks of FYP variations for this account, so new ones don't repeat them. */
+  recentVariationHooks(bundleId: string): string[] {
+    return (
+      this.#db
+        .prepare("SELECT i.slots_json FROM prompt_items i JOIN prompt_batches b ON b.id = i.batch_id WHERE i.bundle_id = ? AND b.template_key = ? ORDER BY i.created_at DESC LIMIT 20")
+        .all(bundleId, FYP_VARIATION_TEMPLATE.key) as Array<{ slots_json: string }>
+    ).map((r) => (JSON.parse(r.slots_json) as Record<string, string>)['hook'] ?? '');
+  }
+
+  /** The context a finished video of this prompt was made from (its hook and caption idea). */
+  promptContext(itemId: string): string {
+    const row = this.#db.prepare('SELECT content_json FROM prompt_items WHERE id = ?').get(itemId) as { content_json: string } | undefined;
+    if (!row) return '';
+    const c = JSON.parse(row.content_json) as PromptContent;
+    const hook = c.sections.find((s) => s.key === 'hook')?.text ?? c.sections[0]?.text ?? '';
+    return [hook, c.caption].filter(Boolean).join(' — ').slice(0, 600);
   }
 
   /** Replaces one prompt with a new variation that differs from the rest of its batch. */

@@ -380,6 +380,66 @@ export interface ReferenceAsset {
   createdAt: string;
 }
 
+export type QueueStatus = 'analyzing' | 'needs_review' | 'ready' | 'posted' | 'rejected' | 'analysis_failed';
+export interface QueueItem {
+  id: string;
+  source: 'ready_made' | 'ai_generated';
+  jobId: string;
+  promptItemId: string | null;
+  originalName: string;
+  status: QueueStatus;
+  caption: string;
+  hashtags: string[];
+  summary: string;
+  note: string;
+  flags: string[];
+  analysisError: string | null;
+  captionEdited: boolean;
+  postUrl: string | null;
+  postedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface ReferenceAnalysis {
+  hook: string;
+  structure: string[];
+  pacing: string;
+  attention: string[];
+  format: string;
+  audio: string;
+}
+export interface FypReference {
+  id: string;
+  assetIds: string[];
+  note: string;
+  analysis: ReferenceAnalysis;
+  createdAt: string;
+}
+export interface AnalysisStatus {
+  provider: string;
+  model: string;
+  keySet: boolean;
+  ready: boolean;
+  synthetic: boolean;
+  costPerCallUsd: number;
+  monthlyBudgetUsd: number;
+  spentThisMonthUsd: number;
+  callsThisMonth: number;
+}
+export interface PostingQueueView {
+  items: QueueItem[];
+  postedToday: number;
+  dailyTarget: number;
+  counts: Record<QueueStatus, number>;
+  references: FypReference[];
+  analysis: AnalysisStatus;
+}
+export interface QueueImportResult {
+  added: string[];
+  duplicates: string[];
+  rejected: Array<{ name: string; reason: string }>;
+}
+
 export interface StudioView {
   templates: Array<{ template: PromptTemplate; versions: number }>;
   configs: Record<string, { config: TemplateConfig; saved: boolean }>;
@@ -508,6 +568,18 @@ interface UgcBridge {
   setProductEligibility(bundleId: string, id: string, state: AffiliateProduct['eligibility']): Promise<Result<AffiliateView>>;
   openProductPage(bundleId: string, id: string): Promise<Result<{ opened: boolean }>>;
   fillProductFromListing(bundleId: string, id: string, usePhoto: boolean): Promise<Result<{ view: AffiliateView; found: string[]; features: number; photo: boolean }>>;
+  postingQueue(bundleId: string): Promise<Result<PostingQueueView>>;
+  chooseQueueVideos(bundleId: string, folder: boolean): Promise<Result<{ canceled: true } | { canceled: false; result: QueueImportResult; view: PostingQueueView }>>;
+  importDroppedVideos(bundleId: string, files: File[]): Promise<Result<{ result: QueueImportResult; view: PostingQueueView }>>;
+  queueItemAction(bundleId: string, id: string, action: 'approve' | 'reject' | 'restore' | 'reanalyze' | 'undo_posted' | 'posted' | 'caption', extra?: { note?: string; postUrl?: string; caption?: string; hashtags?: string[] }): Promise<Result<PostingQueueView>>;
+  retryQueueAnalysis(bundleId: string): Promise<Result<PostingQueueView>>;
+  openTikTokUpload(bundleId: string, id: string): Promise<Result<{ opened: boolean }>>;
+  addFypReferences(bundleId: string, rightsConfirmed: boolean): Promise<Result<{ canceled: boolean; assetIds: string[] }>>;
+  analyzeFypReferences(bundleId: string, assetIds: string[], note: string): Promise<Result<{ reference: FypReference; view: PostingQueueView }>>;
+  makeFypVariations(bundleId: string, referenceId: string, count: number): Promise<Result<{ batchId: string; prompts: number }>>;
+  analysisStatus(): Promise<Result<AnalysisStatus>>;
+  saveAnalysisSettings(settings: { model: string; costPerCallUsd: number; monthlyBudgetUsd: number }, apiKey: string): Promise<Result<AnalysisStatus>>;
+  removeAnalysisKey(): Promise<Result<AnalysisStatus>>;
   openShowcasePage(bundleId: string, id: string): Promise<Result<AffiliateView>>;
   showcaseAction(bundleId: string, id: string, action: 'confirm_seen' | 'not_eligible' | 'failed' | 'removed' | 'reset'): Promise<Result<AffiliateView>>;
   getPlatform(): Promise<Result<PlatformInfo | null>>;
@@ -618,6 +690,18 @@ const MESSAGES: Record<string, [message: string, recovery: string]> = {
   stitch_failed: ['Joining the clips failed.', 'Check the reason below; replace a clip if it’s broken.'],
   invalid_limits: ['The limits must be whole numbers (attempts 1–20, videos per product 1–50).', 'Fix them and save again.'],
   invalid_reason: ['Choose a reason.', 'Pick one from the list.'],
+  unknown_queue_item: ['That video is no longer in the queue.', 'Refresh the screen.'],
+  queue_action_not_allowed: ['That step isn’t possible for this video right now.', 'Check its status; wait until its caption is ready.'],
+  invalid_caption: ['The caption must be 3–300 characters.', 'Edit it and save again.'],
+  invalid_post_url: ['That isn’t a TikTok post link.', 'Paste the full link (tiktok.com/@account/video/…) or leave it empty.'],
+  invalid_reference_request: ['Choose 1–5 reference videos and 1–10 prompts.', 'Adjust and try again.'],
+  analysis_not_configured: ['Video analysis isn’t set up.', 'Open “AI analysis settings” and add a Gemini API key.'],
+  analysis_budget_reached: ['This month’s analysis budget is used up.', 'Raise the monthly budget in “AI analysis settings”, then press “Retry failed”.'],
+  analysis_failed: ['The analysis service didn’t answer.', 'Check the internet connection and API key, then retry.'],
+  analysis_unreadable_answer: ['The analysis answer couldn’t be used.', 'Retry; if it keeps happening, write the caption yourself.'],
+  video_too_large: ['The video is too large to analyze (over 500 MB).', 'Write its caption yourself.'],
+  invalid_analysis_settings: ['Some analysis settings are invalid.', 'Fix the fields listed below.'],
+  secure_storage_unavailable: ['Windows secure storage isn’t available, so the API key can’t be saved safely.', 'Run the app as your normal Windows user.'],
   nothing_to_send: ['No clip to send right now.', 'If a clip is still in Flow, download it there (or mark it failed) first; otherwise make or approve plans.'],
   listing_unreadable: ['The product page couldn’t be read.', 'Look at the TikTok window: complete any security check or sign-in there, then press “Fill from TikTok” again. You can still type the details in “Edit details”.'],
   not_pool_account: ['That isn’t a Flow pool account.', 'Choose an account created as “Flow pool”.'],
@@ -742,6 +826,20 @@ const FIELD_MESSAGES: Record<string, string> = {
   invalid_output: 'The generator returned malformed prompts.',
   unavailable: 'The generator is unavailable.',
   refused: 'The generator refused the request.',
+  // Ternak Akun posting queue (G1)
+  invalid_model: 'Model: lowercase name such as gemini-3.8-flash.',
+  invalid_cost: 'Cost per analysis: a number in USD (0–10).',
+  invalid_budget: 'Monthly budget: a number in USD (0–10000).',
+  invalid_api_key: 'API key: paste the key exactly as Google AI Studio shows it.',
+  unclear_video: 'The AI couldn’t tell what this video shows: write the caption yourself or add a note and analyze again.',
+  low_confidence: 'The AI wasn’t sure about this video: check the caption.',
+  repetitive_caption: 'Very close to another recent caption of this account.',
+  generic_caption: 'The caption is too generic.',
+  no_hashtags: 'No hashtags.',
+  duplicate_in_other_account: 'The same video file is also in another account’s queue.',
+  not_mp4: 'not an .mp4 file',
+  not_a_video: 'not a playable MP4',
+  video_file_too_large: 'larger than 512 MB',
 };
 
 export function describeError(code: string): { message: string; recovery: string } {

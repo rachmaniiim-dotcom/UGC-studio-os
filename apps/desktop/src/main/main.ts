@@ -1,4 +1,4 @@
-import { app, session, type BrowserWindow } from 'electron';
+import { app, safeStorage, session, type BrowserWindow } from 'electron';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,8 @@ import { AffiliateStudioService } from './affiliate-studio.js';
 import { FfmpegRunner } from './ffmpeg.js';
 import { configuredFlowSession, FlowPoolService } from './flow-pool.js';
 import { GrowthService } from './growth.js';
+import { GrowthQueueService } from './growth-queue.js';
+import { AnalysisService } from './media-analyzer.js';
 import { PromptStudioService } from './prompt-studio.js';
 import { registerIpc } from './ipc.js';
 import { VideoLibrary } from './library.js';
@@ -21,7 +23,7 @@ import { resolvePlatforms, SYNTHETIC_PLATFORM_ID } from './platforms.js';
 import { BundleStore, MetadataDb, ProfileStore, type PocProfile } from './profiles.js';
 import { ProxyService, PUBLIC_DIAGNOSTIC_ENDPOINTS, syntheticDiagnosticEndpoints } from './proxy.js';
 import { runSecurityCheck } from './security-check.js';
-import { SessionSync } from './session-sync.js';
+import { protectedStorageAvailable, SessionSync } from './session-sync.js';
 import { hardenSession, profileSession } from './sessions.js';
 import { createMainWindow } from './windows.js';
 
@@ -115,7 +117,10 @@ if (securityCheck) {
       ensureNetworkReady: async () => {
         throw new Error('no network provider configured');
       },
-      onJobEnded: (job) => studio.jobEnded(job),
+      onJobEnded: (job) => {
+        studio.jobEnded(job);
+        growthQueue.addFromJob(job);
+      },
     });
     // Flow session pool (F0): credit ledger for Flow-only Google accounts.
     const flowSessionOf = configuredFlowSession(sessions!);
@@ -145,8 +150,19 @@ if (securityCheck) {
       ffmpeg: () => ffmpeg,
       flowSessionOf,
     });
+    // Ternak Akun posting queue (G1): captions from a multimodal analysis of each video; the API key is sealed by the OS.
+    const analysis = new AnalysisService(
+      meta,
+      userData,
+      { available: protectedStorageAvailable, seal: (t) => safeStorage.encryptString(t), open: (b) => safeStorage.decryptString(b) },
+      log,
+      { synthetic: config.synthetic },
+    );
+    const growthQueue: GrowthQueueService = new GrowthQueueService({ meta, bundles, jobs, library, analysis, prompts: studio, log });
     generation.reconcile();
     studio.reconcile();
+    // Videos left waiting for a caption when the app last closed.
+    void growthQueue.kick();
     // The one download exception: videos the owner downloads in a bundle's Google Flow window.
     const attachDownloads = (p: PocProfile): void => {
       const platform = platformOf(p);
@@ -165,6 +181,7 @@ if (securityCheck) {
           },
           onEnded: (job) => {
             studio.jobEnded(job);
+            growthQueue.addFromJob(job);
             const credits = pool.recordDownload(job);
             void affiliateStudio.jobEnded(job, credits).catch((err: unknown) => log.error('affiliate_clip_hook_error', { jobId: job.id, err }));
           },
@@ -200,6 +217,8 @@ if (securityCheck) {
       affiliate: new AffiliateService(meta, bundles, log),
       pool,
       affiliateStudio,
+      growthQueue,
+      analysis,
     });
     mainWindow = createMainWindow(join(here, '..', 'preload', 'preload.cjs'), config.synthetic, log);
     mainWindow.on('closed', () => (mainWindow = null));

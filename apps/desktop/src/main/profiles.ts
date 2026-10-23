@@ -401,6 +401,53 @@ export const MIGRATIONS: readonly Migration[] = [
    ALTER TABLE production_targets ADD COLUMN daily_videos_per_product INTEGER;`,
   // 9: A3 product photo read from the listing (a reference asset id).
   `ALTER TABLE affiliate_products ADD COLUMN image_asset_id TEXT;`,
+  // 10: Ternak Akun posting queue (G1): ready-made and AI-generated videos per account, captions
+  // from multimodal analysis, FYP reference breakdowns, analysis settings and estimated spend.
+  `CREATE TABLE post_queue (
+     id TEXT PRIMARY KEY,
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     source TEXT NOT NULL CHECK (source IN ('ready_made', 'ai_generated')),
+     job_id TEXT NOT NULL UNIQUE,
+     prompt_item_id TEXT,
+     original_name TEXT NOT NULL,
+     sha256 TEXT NOT NULL,
+     status TEXT NOT NULL CHECK (status IN ('analyzing', 'needs_review', 'ready', 'posted', 'rejected', 'analysis_failed')),
+     caption TEXT NOT NULL DEFAULT '',
+     hashtags_json TEXT NOT NULL DEFAULT '[]',
+     summary TEXT NOT NULL DEFAULT '',
+     note TEXT NOT NULL DEFAULT '',
+     flags_json TEXT NOT NULL DEFAULT '[]',
+     analysis_error TEXT,
+     caption_edited INTEGER NOT NULL DEFAULT 0,
+     post_url TEXT,
+     posted_at TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     UNIQUE (bundle_id, sha256)
+   );
+   CREATE TABLE fyp_references (
+     id TEXT PRIMARY KEY,
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     asset_ids_json TEXT NOT NULL,
+     note TEXT NOT NULL DEFAULT '',
+     analysis_json TEXT NOT NULL,
+     created_at TEXT NOT NULL
+   );
+   CREATE TABLE analysis_settings (
+     id INTEGER PRIMARY KEY CHECK (id = 1),
+     model TEXT NOT NULL,
+     cost_per_call_usd REAL NOT NULL,
+     monthly_budget_usd REAL NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE TABLE analysis_usage (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     bundle_id TEXT NOT NULL,
+     kind TEXT NOT NULL,
+     at TEXT NOT NULL,
+     cost_usd REAL NOT NULL,
+     ok INTEGER NOT NULL
+   );`,
 ];
 
 export class MetadataDb {

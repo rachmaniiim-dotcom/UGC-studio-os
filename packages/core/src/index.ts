@@ -230,3 +230,20 @@ export {
   type ListingIssue,
   type ListingSnapshot,
 } from './affiliate/listing.js';
+export {
+  captionFlags,
+  FYP_VARIATION_TEMPLATE,
+  fypVariationConfig,
+  normalizeHashtags,
+  parseModelJson,
+  referenceInstructions,
+  validateReferenceAnalysis,
+  validateVariations,
+  validateVideoAnalysis,
+  variationInstructions,
+  videoCaptionInstructions,
+  type CaptionFlag,
+  type ReferenceAnalysis,
+  type Variation,
+  type VideoAnalysis,
+} from './growth/media.js';

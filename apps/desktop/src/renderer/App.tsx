@@ -9,10 +9,11 @@ import { AffiliateLibrary } from './AffiliateLibrary.js';
 import { AffiliateStudio } from './AffiliateStudio.js';
 import { ProductionBoard } from './ProductionBoard.js';
 import { PromptStudio } from './PromptStudio.js';
+import { PostingQueue } from './PostingQueue.js';
 import { LegacyProfiles } from './LegacyProfiles.js';
 
 // `visit` keeps the editor mounted while a new draft gets its id (so its confirmations stay visible).
-type View = { kind: 'dashboard' } | { kind: 'editor'; accountId: string | null; visit: number } | { kind: 'growth'; accountId: string } | { kind: 'studio'; accountId: string } | { kind: 'board' } | { kind: 'products'; accountId: string } | { kind: 'pool' } | { kind: 'astudio'; accountId: string; productRowId: string } | { kind: 'alibrary'; accountId: string };
+type View = { kind: 'dashboard' } | { kind: 'editor'; accountId: string | null; visit: number } | { kind: 'growth'; accountId: string } | { kind: 'studio'; accountId: string } | { kind: 'board' } | { kind: 'products'; accountId: string } | { kind: 'pool' } | { kind: 'astudio'; accountId: string; productRowId: string } | { kind: 'alibrary'; accountId: string } | { kind: 'gqueue'; accountId: string };
 
 export function App(): React.JSX.Element {
   const [view, setView] = useState<View>({ kind: 'dashboard' });
@@ -67,6 +68,7 @@ export function App(): React.JSX.Element {
               onProducts={(id) => setView({ kind: 'products', accountId: id })}
               onPool={() => setView({ kind: 'pool' })}
               onLibrary={(id) => setView({ kind: 'alibrary', accountId: id })}
+              onQueue={(id) => setView({ kind: 'gqueue', accountId: id })}
             />
             {legacy && <LegacyProfiles platform={legacy.platform} profiles={legacy.profiles} onChanged={refresh} />}
           </>
@@ -111,6 +113,15 @@ export function App(): React.JSX.Element {
               setView({ kind: 'dashboard' });
             }}
             onStudio={(id) => setView({ kind: 'studio', accountId: id })}
+          />
+        ) : view.kind === 'gqueue' ? (
+          <PostingQueue
+            account={accounts.find((a) => a.id === view.accountId) ?? null}
+            onBack={async () => {
+              await refresh();
+              setView({ kind: 'dashboard' });
+            }}
+            onStudio={() => setView({ kind: 'studio', accountId: view.accountId })}
           />
         ) : view.kind === 'studio' ? (
           <PromptStudio

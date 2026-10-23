@@ -186,3 +186,45 @@ video.player { width: 180px; max-height: 320px; background: #000; border-radius:
 .library-media { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 6px; }
 details.settings > summary { cursor: pointer; }
 .astudio select { width: auto; }
+
+/* Ternak Akun posting queue (G1) */
+.dropzone {
+  border: 2px dashed var(--border, #c9ced6);
+}
+.dropzone.dragging {
+  border-color: #3b6fd8;
+  background: rgba(59, 111, 216, 0.06);
+}
+.queue-card {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border, #e3e6ea);
+}
+.queue-card video.player {
+  width: 180px;
+  max-height: 320px;
+}
+.queue-body textarea,
+.queue-body input[aria-label='Hashtags'] {
+  width: 100%;
+  margin: 4px 0;
+}
+.reference-analysis {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-left: 3px solid #3b6fd8;
+  background: rgba(59, 111, 216, 0.05);
+}
+.queue-body .actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.queue-body .actions input {
+  width: auto;
+  flex: 0 1 220px;
+  margin: 0;
+}

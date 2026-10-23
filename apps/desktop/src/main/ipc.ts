@@ -1,6 +1,6 @@
 import { BrowserWindow as Windows, clipboard, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
-import { readFile, rm, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readdir, readFile, rm, stat } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
 import {
   DEFAULT_MAX_BYTES,
   bundleStatus,
@@ -29,6 +29,11 @@ import { PoolError, type FlowPoolService } from './flow-pool.js';
 import { GrowthError, type GrowthService } from './growth.js';
 import { StudioError, type PromptStudioService } from './prompt-studio.js';
 import { downloadListingImage, readOpenListing } from './listing-reader.js';
+import { GrowthQueueError, type GrowthQueueService } from './growth-queue.js';
+import { AnalysisError, type AnalysisService } from './media-analyzer.js';
+
+/** TikTok's own upload page (TikTok Studio), opened in the account's window for the owner to post. */
+const TIKTOK_UPLOAD_URL = 'https://www.tiktok.com/tiktokstudio/upload';
 import type { GenerationJob, GenerationStore } from './generation-store.js';
 import type { VideoLibrary } from './library.js';
 import { SYNTHETIC_PLATFORM_ID } from './platforms.js';
@@ -118,6 +123,20 @@ export type IpcErrorCode =
   | 'invalid_limits'
   | 'invalid_reason'
   | 'nothing_to_send'
+  | 'not_growth_account'
+  | 'unknown_queue_item'
+  | 'queue_action_not_allowed'
+  | 'invalid_caption'
+  | 'invalid_post_url'
+  | 'unknown_reference'
+  | 'invalid_reference_request'
+  | 'analysis_not_configured'
+  | 'analysis_budget_reached'
+  | 'analysis_failed'
+  | 'analysis_unreadable_answer'
+  | 'video_too_large'
+  | 'invalid_analysis_settings'
+  | 'secure_storage_unavailable'
   | 'internal_error';
 
 /** `details` carries sanitized issue codes (e.g. which field is invalid), never input values. */
@@ -153,6 +172,8 @@ export interface IpcDeps {
   readonly affiliate: AffiliateService;
   readonly pool: FlowPoolService;
   readonly affiliateStudio: AffiliateStudioService;
+  readonly growthQueue: GrowthQueueService;
+  readonly analysis: AnalysisService;
 }
 
 /** What the UI may know about a platform. */
@@ -250,6 +271,8 @@ export function registerIpc({
   affiliate,
   pool,
   affiliateStudio,
+  growthQueue,
+  analysis,
 }: IpcDeps): void {
   const devTools = config.synthetic;
   const platformOf = (profile: PocProfile): PlatformDefinition | undefined => platforms.get(profile.platformId);
@@ -351,6 +374,25 @@ export function registerIpc({
     }
   };
 
+  const gqError = (err: unknown): never => {
+    if (err instanceof GrowthQueueError || err instanceof AnalysisError) throw new IpcError(err.code, err.details);
+    if (err instanceof StudioError) throw new IpcError(err.code, err.details);
+    throw err;
+  };
+  const gqCall = <T>(run: () => T): T => {
+    try {
+      return run();
+    } catch (err) {
+      return gqError(err);
+    }
+  };
+  const gqCallAsync = async <T>(run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (err) {
+      return gqError(err);
+    }
+  };
   const affiliateCall = <T>(run: () => T): T => {
     try {
       return run();
@@ -874,6 +916,129 @@ export function registerIpc({
     },
 
     // ---- Flow session pool (F0): Flow-only Google accounts supplying generation credits ----
+
+    // ---- Ternak Akun posting queue (G1) ----
+    'gq:view': async (payload) => {
+      const bundle = requireBundle(requireObject(payload, ['bundleId']));
+      return gqCall(() => ({ ...growthQueue.view(bundle.id), analysis: analysis.status() }));
+    },
+
+    // Finished MP4s picked in a file dialog (or every .mp4 directly inside a chosen folder).
+    'gq:choose-videos': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'folder']);
+      const bundle = requireBundle(request);
+      const folder = request['folder'] === true;
+      const win = mainWindow();
+      const options = folder
+        ? { title: 'Choose a folder of finished MP4 videos', properties: ['openDirectory' as const] }
+        : { title: 'Choose finished MP4 videos', properties: ['openFile' as const, 'multiSelections' as const], filters: [{ name: 'MP4 video', extensions: ['mp4'] }] };
+      const pick = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (pick.canceled || pick.filePaths.length === 0) return { canceled: true };
+      let paths = pick.filePaths;
+      if (folder) {
+        const dir = pick.filePaths[0]!;
+        paths = (await readdir(dir, { withFileTypes: true }))
+          .filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.mp4'))
+          .map((e) => join(dir, e.name))
+          .slice(0, 200);
+      }
+      const result = await gqCallAsync(() => growthQueue.importFiles(bundle.id, paths));
+      return { canceled: false, result, view: { ...growthQueue.view(bundle.id), analysis: analysis.status() } };
+    },
+
+    // Files dropped on the queue: the preload passes their local paths; only absolute .mp4 paths are accepted.
+    'gq:import-paths': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'paths']);
+      const bundle = requireBundle(request);
+      const paths = request['paths'];
+      if (!Array.isArray(paths) || paths.length < 1 || paths.length > 200 || !paths.every((p) => typeof p === 'string' && isAbsolute(p) && p.length < 1000)) {
+        throw new IpcError('invalid_request');
+      }
+      const result = await gqCallAsync(() => growthQueue.importFiles(bundle.id, paths as string[]));
+      return { result, view: { ...growthQueue.view(bundle.id), analysis: analysis.status() } };
+    },
+
+    'gq:item-action': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'id', 'action', 'note', 'postUrl', 'caption', 'hashtags']);
+      const bundle = requireBundle(request);
+      const id = requireId(request, 'id');
+      const action = request['action'];
+      return gqCall(() => {
+        if (action === 'approve') growthQueue.approve(bundle.id, id);
+        else if (action === 'reject') growthQueue.reject(bundle.id, id);
+        else if (action === 'restore') growthQueue.restore(bundle.id, id);
+        else if (action === 'reanalyze') growthQueue.reanalyze(bundle.id, id, request['note']);
+        else if (action === 'undo_posted') growthQueue.undoPosted(bundle.id, id);
+        else if (action === 'posted') growthQueue.markPosted(bundle.id, id, request['postUrl']);
+        else if (action === 'caption') growthQueue.updateCaption(bundle.id, id, request['caption'], request['hashtags']);
+        else throw new IpcError('invalid_request');
+        return { ...growthQueue.view(bundle.id), analysis: analysis.status() };
+      });
+    },
+
+    'gq:retry-failed': async (payload) => {
+      const bundle = requireBundle(requireObject(payload, ['bundleId']));
+      return gqCall(() => {
+        growthQueue.retryFailed(bundle.id);
+        return { ...growthQueue.view(bundle.id), analysis: analysis.status() };
+      });
+    },
+
+    // Supported posting: TikTok's own upload page in this account's window (its proxy and login), the
+    // caption and hashtags on the clipboard, and the video shown in its folder to drag in. The owner posts.
+    'gq:open-upload': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'id']);
+      const bundle = requireBundle(request);
+      const { text, file } = gqCall(() => growthQueue.postText(bundle.id, requireId(request, 'id')));
+      await openInAccount(bundle.id, 'tiktok', TIKTOK_UPLOAD_URL, 'Upload');
+      clipboard.writeText(text);
+      shell.showItemInFolder(file);
+      return { opened: true };
+    },
+
+    // FYP reference videos the owner supplies (files they may use); kept as this account's references.
+    'gq:add-references': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'rightsConfirmed']);
+      const bundle = requireBundle(request);
+      if (request['rightsConfirmed'] !== true) throw new IpcError('rights_not_confirmed');
+      const win = mainWindow();
+      const options = { title: 'Add FYP reference videos', properties: ['openFile' as const, 'multiSelections' as const], filters: [{ name: 'Videos', extensions: ['mp4', 'mov'] }] };
+      const pick = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      if (pick.canceled || pick.filePaths.length === 0) return { canceled: true, assetIds: [] };
+      const assetIds: string[] = [];
+      for (const file of pick.filePaths.slice(0, 5)) assetIds.push((await studioCallAsync(() => studio.addReference(bundle.id, file, true))).id);
+      return { canceled: false, assetIds };
+    },
+
+    'gq:analyze-references': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'assetIds', 'note']);
+      const bundle = requireBundle(request);
+      const reference = await gqCallAsync(() => growthQueue.analyzeReferences(bundle.id, request['assetIds'], request['note']));
+      return { reference, view: { ...growthQueue.view(bundle.id), analysis: analysis.status() } };
+    },
+
+    'gq:make-variations': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'referenceId', 'count']);
+      const bundle = requireBundle(request);
+      const batch = await gqCallAsync(() => growthQueue.makeVariations(bundle.id, requireId(request, 'referenceId'), request['count']));
+      return { batchId: batch.id, prompts: batch.items.length };
+    },
+
+    'ai:status': async () => analysis.status(),
+
+    // The API key goes main-side only: sealed with the OS, never returned or logged.
+    'ai:save': async (payload) => {
+      const request = requireObject(payload, ['settings', 'apiKey']);
+      return gqCall(() => {
+        analysis.save(request['settings'], request['apiKey']);
+        return analysis.status();
+      });
+    },
+
+    'ai:remove-key': async () => {
+      analysis.removeKey();
+      return analysis.status();
+    },
 
     'pool:list': async () => poolCall(() => pool.list()),
 
