@@ -221,6 +221,42 @@ export interface PromptItem {
   updatedAt: string;
 }
 
+export type ShowcaseState = 'not_requested' | 'in_progress' | 'added_seen_by_you' | 'added_confirmed_by_tiktok' | 'not_eligible' | 'failed' | 'removed';
+
+export interface ProductFacts {
+  title: string;
+  shopName: string;
+  priceIdr: number | null;
+  commissionPct: number | null;
+  features: string[];
+  references: string[];
+  notes: string;
+}
+
+export interface AffiliateProduct {
+  id: string;
+  productId: string;
+  productUrl: string;
+  source: 'link' | 'research_address';
+  facts: ProductFacts;
+  summary: string;
+  selectedToday: boolean;
+  listing: 'unverified' | 'confirmed' | 'mismatch';
+  eligibility: 'unknown' | 'can_promote' | 'cannot_promote';
+  showcase: ShowcaseState;
+  showcaseMethod: 'assisted' | 'api' | null;
+  showcaseChangedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AffiliateView {
+  products: AffiliateProduct[];
+  today: string;
+  dailyLimit: number;
+  selectedToday: number;
+}
+
 export interface BoardRow {
   bundleId: string;
   displayName: string;
@@ -337,6 +373,18 @@ interface UgcBridge {
   undoPosted(bundleId: string, itemId: string): Promise<Result<StudioView>>;
   productionBoard(): Promise<Result<BoardRow[]>>;
   setDailyTarget(bundleId: string, target: number): Promise<Result<BoardRow[]>>;
+  affiliateView(bundleId: string): Promise<Result<AffiliateView>>;
+  addAffiliateProducts(bundleId: string, text: string): Promise<Result<{ result: { added: string[]; existing: string[]; rejected: Array<{ line: number; input: string; issue: string }> }; view: AffiliateView }>>;
+  captureProductFromResearch(bundleId: string): Promise<Result<{ productId: string; outcome: 'added' | 'existing'; view: AffiliateView }>>;
+  removeAffiliateProduct(bundleId: string, id: string): Promise<Result<AffiliateView>>;
+  selectAffiliateProduct(bundleId: string, id: string, selected: boolean): Promise<Result<AffiliateView>>;
+  setDailyProducts(bundleId: string, limit: number): Promise<Result<AffiliateView>>;
+  updateProductFacts(bundleId: string, id: string, facts: Record<string, unknown>): Promise<Result<AffiliateView>>;
+  setProductListing(bundleId: string, id: string, state: AffiliateProduct['listing']): Promise<Result<AffiliateView>>;
+  setProductEligibility(bundleId: string, id: string, state: AffiliateProduct['eligibility']): Promise<Result<AffiliateView>>;
+  openProductPage(bundleId: string, id: string): Promise<Result<{ opened: boolean }>>;
+  openShowcasePage(bundleId: string, id: string): Promise<Result<AffiliateView>>;
+  showcaseAction(bundleId: string, id: string, action: 'confirm_seen' | 'not_eligible' | 'failed' | 'removed' | 'reset'): Promise<Result<AffiliateView>>;
   getPlatform(): Promise<Result<PlatformInfo | null>>;
   listProfiles(): Promise<Result<Session[]>>;
   importCookies(profileId: string): Promise<Result<{ canceled: boolean; profile: Session }>>;
@@ -428,6 +476,17 @@ const MESSAGES: Record<string, [message: string, recovery: string]> = {
   invalid_preset: ['The preset can’t be saved.', 'Give it a name and a description (max 2,000 characters).'],
   invalid_post_link: ['That isn’t a TikTok video link.', 'Paste the full link of your post (https://www.tiktok.com/@you/video/…) or leave it empty.'],
   invalid_target: ['The daily target must be a whole number from 1 to 50.', 'Enter a number and save again.'],
+  not_affiliate_account: ['Affiliate Products is only for Affiliate UGC accounts.', 'Open it from an affiliate account.'],
+  unknown_product: ['That product no longer exists.', 'Refresh the screen.'],
+  invalid_product_list: ['Nothing to add.', 'Paste 1–200 TikTok product links or IDs, one per line.'],
+  invalid_facts: ['Some product details are invalid.', 'Fix the fields listed below.'],
+  invalid_daily_products: ['The daily product limit must be 1–20.', 'Enter a whole number.'],
+  daily_selection_full: ['Today’s selection is full.', 'Remove a product from today or raise the daily limit.'],
+  listing_not_confirmed: ['Confirm the listing first.', 'Open the product in this account’s TikTok window and press “This is the exact listing”.'],
+  showcase_action_not_allowed: ['That step isn’t possible in the product’s current Showcase state.', 'Refresh and check its state.'],
+  no_product_in_address: ['No TikTok product ID was found in the Kalodata window’s address.', 'Copy the product’s TikTok link and paste it under “Add products”.'],
+  no_research_window: ['This account’s Kalodata window isn’t open.', 'Press “Open Kalodata”, open a product there, then try again.'],
+  session_not_configured: ['This account has no session for that platform.', 'Set it up in the account editor.'],
   unknown_video: ['That video can’t be linked.', 'Choose a finished video of this account that isn’t linked to another prompt.'],
   untrusted_sender: ['The request was refused.', 'Restart the app.'],
   internal_error: ['Something went wrong.', 'Try again; if it repeats, restart the app.'],
@@ -503,6 +562,15 @@ const FIELD_MESSAGES: Record<string, string> = {
   unreadable: 'The file couldn’t be read.',
   content_mismatch: 'The file’s content doesn’t match its extension.',
   reference_too_large: 'Reference files can be up to 200 MB.',
+  invalid_title: 'Title: up to 200 characters.',
+  invalid_shop: 'Shop name: up to 100 characters.',
+  invalid_price: 'Price: a whole number of rupiah, e.g. 89000 or 89.000.',
+  invalid_commission: 'Commission: a percentage from 0 to 80, e.g. 12 or 12,5.',
+  invalid_features: 'Features: up to 20 lines, 200 characters each.',
+  invalid_references: 'References: up to 10 full TikTok video links (https://www.tiktok.com/@creator/video/…).',
+  invalid_notes: 'Notes: up to 1,000 characters.',
+  invalid_product_ref: 'not a TikTok product link or ID',
+  not_a_product_link: 'not a TikTok product page link (…/view/product/<id>)',
   invalid_output: 'The generator returned malformed prompts.',
   unavailable: 'The generator is unavailable.',
   refused: 'The generator refused the request.',

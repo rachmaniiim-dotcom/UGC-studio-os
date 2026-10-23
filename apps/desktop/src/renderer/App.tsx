@@ -3,12 +3,13 @@ import { AccountEditor } from './AccountEditor.js';
 import { bridge, describeError, type Account, type PlatformInfo, type Session } from './bridge.js';
 import { Dashboard } from './Dashboard.js';
 import { GrowthIntelligence } from './GrowthIntelligence.js';
+import { AffiliateProducts } from './AffiliateProducts.js';
 import { ProductionBoard } from './ProductionBoard.js';
 import { PromptStudio } from './PromptStudio.js';
 import { LegacyProfiles } from './LegacyProfiles.js';
 
 // `visit` keeps the editor mounted while a new draft gets its id (so its confirmations stay visible).
-type View = { kind: 'dashboard' } | { kind: 'editor'; accountId: string | null; visit: number } | { kind: 'growth'; accountId: string } | { kind: 'studio'; accountId: string } | { kind: 'board' };
+type View = { kind: 'dashboard' } | { kind: 'editor'; accountId: string | null; visit: number } | { kind: 'growth'; accountId: string } | { kind: 'studio'; accountId: string } | { kind: 'board' } | { kind: 'products'; accountId: string };
 
 export function App(): React.JSX.Element {
   const [view, setView] = useState<View>({ kind: 'dashboard' });
@@ -60,9 +61,18 @@ export function App(): React.JSX.Element {
               onGrowth={(id) => setView({ kind: 'growth', accountId: id })}
               onStudio={(id) => setView({ kind: 'studio', accountId: id })}
               onBoard={() => setView({ kind: 'board' })}
+              onProducts={(id) => setView({ kind: 'products', accountId: id })}
             />
             {legacy && <LegacyProfiles platform={legacy.platform} profiles={legacy.profiles} onChanged={refresh} />}
           </>
+        ) : view.kind === 'products' ? (
+          <AffiliateProducts
+            account={accounts.find((a) => a.id === view.accountId) ?? null}
+            onBack={async () => {
+              await refresh();
+              setView({ kind: 'dashboard' });
+            }}
+          />
         ) : view.kind === 'board' ? (
           <ProductionBoard
             onBack={async () => {

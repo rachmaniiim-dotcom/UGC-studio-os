@@ -1,4 +1,4 @@
-import { clipboard, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { BrowserWindow as Windows, clipboard, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import { readFile, stat } from 'node:fs/promises';
 import {
   BUNDLE_PLATFORMS,
@@ -7,6 +7,8 @@ import {
   importCookieEditorExport,
   oversizedFileResult,
   PROMPT_ACTIONS,
+  SHOWCASE_PAGE_URL,
+  urlInDomains,
   validateAccountInput,
   validateCreativeInput,
   type BundleStatus,
@@ -20,6 +22,7 @@ import type { RuntimeConfig } from './config.js';
 import { replaceCookies, type LoadResult } from './electron-cookies.js';
 import { cookieEncryptionFuseEnabled } from './fuses.js';
 import { GenerationError, type GenerationService } from './generation.js';
+import { AffiliateError, type AffiliateService } from './affiliate.js';
 import { GrowthError, type GrowthService } from './growth.js';
 import { StudioError, type PromptStudioService } from './prompt-studio.js';
 import type { GenerationJob, GenerationStore } from './generation-store.js';
@@ -78,6 +81,17 @@ export type IpcErrorCode =
   | 'unknown_video'
   | 'invalid_post_link'
   | 'invalid_target'
+  | 'not_affiliate_account'
+  | 'unknown_product'
+  | 'invalid_product_list'
+  | 'invalid_facts'
+  | 'invalid_daily_products'
+  | 'daily_selection_full'
+  | 'listing_not_confirmed'
+  | 'showcase_action_not_allowed'
+  | 'no_product_in_address'
+  | 'no_research_window'
+  | 'session_not_configured'
   | 'internal_error';
 
 /** `details` carries sanitized issue codes (e.g. which field is invalid), never input values. */
@@ -110,6 +124,7 @@ export interface IpcDeps {
   readonly onSessionCreated: (profile: PocProfile) => void;
   readonly growth: GrowthService;
   readonly studio: PromptStudioService;
+  readonly affiliate: AffiliateService;
 }
 
 /** What the UI may know about a platform. */
@@ -204,6 +219,7 @@ export function registerIpc({
   onSessionCreated,
   growth,
   studio,
+  affiliate,
 }: IpcDeps): void {
   const devTools = config.synthetic;
   const platformOf = (profile: PocProfile): PlatformDefinition | undefined => platforms.get(profile.platformId);
@@ -276,6 +292,37 @@ export function registerIpc({
       if (err instanceof ProxyError) throw new IpcError(err.code as IpcErrorCode, err.details);
       throw err;
     }
+  };
+
+  const affiliateCall = <T>(run: () => T): T => {
+    try {
+      return run();
+    } catch (err) {
+      if (err instanceof AffiliateError) throw new IpcError(err.code, err.details);
+      throw err;
+    }
+  };
+  const bundleProfile = (bundleId: string, platformId: string): PocProfile => {
+    const profile = sessions.list().find((p) => p.bundleId === bundleId && p.platformId === platformId);
+    if (!profile || !platformOf(profile)) throw new IpcError('session_not_configured');
+    return profile;
+  };
+  /**
+   * Opens a URL of a real platform in the account's window for that platform. In synthetic runs
+   * the same path is opened on the platform's synthetic stand-in host instead.
+   */
+  const openInAccount = async (bundleId: string, platformId: string, realUrl: string, label: string): Promise<void> => {
+    const profile = bundleProfile(bundleId, platformId);
+    const platform = platformOf(profile)!;
+    let url = realUrl;
+    if (!urlInDomains(realUrl, platform.navigationDomains)) {
+      const real = new URL(realUrl);
+      url = `${new URL(platform.pages['home']!).origin}${real.pathname}${real.search}`;
+    }
+    await requireNetworkReady(profile);
+    sessionOf(profile);
+    const win = openSiteWindow(profile.partition, `${profile.label} — ${label}`, url, platform.navigationDomains, devTools, log);
+    proxies?.watchWindow(win.webContents);
   };
 
   const studioError = (err: unknown): never => {
@@ -763,6 +810,126 @@ export function registerIpc({
       return studioCall(() => {
         studio.deletePreset(presetId);
         return studio.view(bundle.id);
+      });
+    },
+
+    // ---- Affiliate Products (A1): product IDs, today's selection, assisted Showcase ----
+
+    'affiliate:view': async (payload) => affiliateCall(() => affiliate.view(requireBundle(requireObject(payload, ['bundleId'])).id)),
+
+    'affiliate:add-text': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'text']);
+      const bundle = requireBundle(request);
+      if (typeof request['text'] !== 'string') throw new IpcError('invalid_request');
+      return affiliateCall(() => ({ result: affiliate.addFromText(bundle.id, request['text'] as string), view: affiliate.view(bundle.id) }));
+    },
+
+    // Reads only the address of the account's open research (Kalodata) window, never its page.
+    'affiliate:capture-from-research': async (payload) => {
+      const bundle = requireBundle(requireObject(payload, ['bundleId']));
+      const profile = bundleProfile(bundle.id, 'kalodata');
+      const ses = sessionOf(profile);
+      const open = Windows.getAllWindows().filter((w) => !w.isDestroyed() && w.webContents.session === ses && w.isVisible());
+      const focused = open.find((w) => w.isFocused()) ?? open.at(-1);
+      if (!focused) throw new IpcError('no_research_window');
+      const address = focused.webContents.getURL();
+      return affiliateCall(() => ({ ...affiliate.addFromAddress(bundle.id, address), view: affiliate.view(bundle.id) }));
+    },
+
+    'affiliate:remove': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'id']);
+      const bundle = requireBundle(request);
+      const id = requireId(request, 'id');
+      return affiliateCall(() => {
+        affiliate.remove(bundle.id, id);
+        return affiliate.view(bundle.id);
+      });
+    },
+
+    'affiliate:select': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'id', 'selected']);
+      const bundle = requireBundle(request);
+      const id = requireId(request, 'id');
+      if (typeof request['selected'] !== 'boolean') throw new IpcError('invalid_request');
+      return affiliateCall(() => {
+        affiliate.select(bundle.id, id, request['selected'] as boolean);
+        return affiliate.view(bundle.id);
+      });
+    },
+
+    'affiliate:set-limit': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'limit']);
+      const bundle = requireBundle(request);
+      return affiliateCall(() => {
+        affiliate.setDailyLimit(bundle.id, request['limit']);
+        return affiliate.view(bundle.id);
+      });
+    },
+
+    'affiliate:update-facts': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'id', 'facts']);
+      const bundle = requireBundle(request);
+      const id = requireId(request, 'id');
+      return affiliateCall(() => {
+        affiliate.updateFacts(bundle.id, id, request['facts']);
+        return affiliate.view(bundle.id);
+      });
+    },
+
+    'affiliate:set-listing': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'id', 'state']);
+      const bundle = requireBundle(request);
+      const id = requireId(request, 'id');
+      return affiliateCall(() => {
+        affiliate.setListing(bundle.id, id, request['state']);
+        return affiliate.view(bundle.id);
+      });
+    },
+
+    'affiliate:set-eligibility': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'id', 'state']);
+      const bundle = requireBundle(request);
+      const id = requireId(request, 'id');
+      return affiliateCall(() => {
+        affiliate.setEligibility(bundle.id, id, request['state']);
+        return affiliate.view(bundle.id);
+      });
+    },
+
+    // Opens the product's TikTok page in this account's own TikTok window (its proxy and session).
+    'affiliate:open-product': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'id']);
+      const bundle = requireBundle(request);
+      const id = requireId(request, 'id');
+      const { url } = affiliateCall(() => affiliate.productUrl(bundle.id, id));
+      await openInAccount(bundle.id, 'tiktok', url, 'product');
+      return { opened: true };
+    },
+
+    // Assisted Showcase: opens TikTok's own Showcase page in this account's window, with the product
+    // link on the clipboard. The owner adds it with TikTok's controls; nothing is clicked for them.
+    'affiliate:open-showcase': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'id']);
+      const bundle = requireBundle(request);
+      const id = requireId(request, 'id');
+      const { url } = affiliateCall(() => affiliate.productUrl(bundle.id, id));
+      const profile = bundleProfile(bundle.id, 'tiktok');
+      await requireNetworkReady(profile);
+      affiliateCall(() => affiliate.showcase(bundle.id, id, 'start'));
+      clipboard.writeText(url);
+      await openInAccount(bundle.id, 'tiktok', SHOWCASE_PAGE_URL, 'Showcase');
+      return affiliate.view(bundle.id);
+    },
+
+    'affiliate:showcase': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'id', 'action']);
+      const bundle = requireBundle(request);
+      const id = requireId(request, 'id');
+      const action = request['action'];
+      if (action !== 'confirm_seen' && action !== 'not_eligible' && action !== 'failed' && action !== 'removed' && action !== 'reset') throw new IpcError('invalid_request');
+      return affiliateCall(() => {
+        affiliate.showcase(bundle.id, id, action);
+        return affiliate.view(bundle.id);
       });
     },
 

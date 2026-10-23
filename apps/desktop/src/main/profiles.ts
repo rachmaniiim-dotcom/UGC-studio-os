@@ -275,6 +275,26 @@ const MIGRATIONS: readonly string[] = [
      daily_videos INTEGER NOT NULL CHECK (daily_videos BETWEEN 1 AND 50),
      updated_at TEXT NOT NULL
    );`,
+  // A1 (Affiliate Factory): products per affiliate account, identified by TikTok product ID only.
+  // Listing facts are what the owner verified; Showcase states record who confirmed an addition.
+  `CREATE TABLE affiliate_products (
+     id TEXT PRIMARY KEY,
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     platform_product_id TEXT NOT NULL,
+     source TEXT NOT NULL CHECK (source IN ('link', 'research_address')),
+     facts_json TEXT NOT NULL,
+     selected_on TEXT,
+     listing_state TEXT NOT NULL DEFAULT 'unverified' CHECK (listing_state IN ('unverified', 'confirmed', 'mismatch')),
+     eligibility_state TEXT NOT NULL DEFAULT 'unknown' CHECK (eligibility_state IN ('unknown', 'can_promote', 'cannot_promote')),
+     showcase_state TEXT NOT NULL DEFAULT 'not_requested'
+       CHECK (showcase_state IN ('not_requested', 'in_progress', 'added_seen_by_you', 'added_confirmed_by_tiktok', 'not_eligible', 'failed', 'removed')),
+     showcase_method TEXT CHECK (showcase_method IN ('assisted', 'api')),
+     showcase_changed_at TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     UNIQUE (bundle_id, platform_product_id)
+   );
+   ALTER TABLE production_targets ADD COLUMN daily_products INTEGER;`,
 ];
 
 export class MetadataDb {

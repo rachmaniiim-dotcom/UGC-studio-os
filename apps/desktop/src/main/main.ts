@@ -8,6 +8,7 @@ import { readRuntimeConfig } from './config.js';
 import { attachFlowDownloads } from './downloads.js';
 import { GenerationService } from './generation.js';
 import { GenerationStore } from './generation-store.js';
+import { AffiliateService } from './affiliate.js';
 import { GrowthService } from './growth.js';
 import { PromptStudioService } from './prompt-studio.js';
 import { registerIpc } from './ipc.js';
@@ -159,6 +160,7 @@ if (securityCheck) {
       onSessionCreated: attachDownloads,
       growth: new GrowthService(meta, bundles, log),
       studio,
+      affiliate: new AffiliateService(meta, bundles, log),
     });
     mainWindow = createMainWindow(join(here, '..', 'preload', 'preload.cjs'), config.synthetic, log);
     mainWindow.on('closed', () => (mainWindow = null));

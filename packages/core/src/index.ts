@@ -166,3 +166,22 @@ export {
   type ConceptResponse,
 } from './templates/provider.js';
 export { ASMR_TEMPLATE, DANCE_TEMPLATE, GRANDMA_TEMPLATE, STARTER_TEMPLATES } from './templates/starters.js';
+export {
+  DEFAULT_DAILY_PRODUCTS,
+  EMPTY_FACTS,
+  parseProductList,
+  parseProductRef,
+  productIdFromAddress,
+  productPageUrl,
+  productSummary,
+  SHOWCASE_ACTIONS,
+  SHOWCASE_PAGE_URL,
+  validateFacts,
+  type EligibilityState,
+  type FactsIssue,
+  type ListingState,
+  type ProductFacts,
+  type ProductRefIssue,
+  type ShowcaseAction,
+  type ShowcaseState,
+} from './affiliate/product.js';

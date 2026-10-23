@@ -164,3 +164,11 @@ label.tiny { font-size: 0.72rem; }
 .board-table input.target { width: 56px; }
 .progress { height: 4px; background: var(--chip-bg); border-radius: 2px; margin-top: 4px; width: 90px; }
 .progress span { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+.product-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.product-grid { grid-template-columns: repeat(4, 1fr); margin-top: 8px; }
+.showcase-box { border-top: 1px dashed var(--border); margin-top: 8px; padding-top: 6px; }
+ul.features { margin: 4px 0; padding-left: 18px; }
+label.inline { display: inline-flex; gap: 6px; align-items: center; }
+.product-card .actions select { width: auto; }
+.summary label.inline { display: inline-flex; flex-direction: row; gap: 6px; align-items: center; font-weight: 400; }
+.summary input.target { width: 56px; }
