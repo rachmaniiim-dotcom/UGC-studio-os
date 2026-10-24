@@ -73,6 +73,10 @@ describe('listing reader', () => {
       'Mudah dicuci',
     ]);
     expect(featuresFromDescription('a\nb'.repeat(3))).toEqual([]);
+    // Shop and listing stats aren't product features.
+    expect(
+      featuresFromDescription('Bahan kulit PU tebal\n190.7K sold, 9.4K+ followers\nShop newfashion188 on TikTok Shop!\n4.8 rating dari 2rb ulasan\nUkuran 45x17x29 cm\nTerjual 10rb+'),
+    ).toEqual(['Bahan kulit PU tebal', 'Ukuran 45x17x29 cm']);
   });
 
   it('parses rupiah amounts', () => {

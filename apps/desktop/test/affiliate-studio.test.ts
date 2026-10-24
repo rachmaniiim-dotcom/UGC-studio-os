@@ -232,7 +232,7 @@ describe('A3: listing fill, one-click videos and the clip queue', () => {
       ['approved', 'cut'],
       ['approved', 'cut'],
     ]);
-    expect(videos[0]!.clips[0]!.manualSteps[0]).toContain('listing.png');
+    expect(videos[0]!.clips[0]!.manualSteps[0]).toContain('"1-product" (the product photo)');
     expect(videos[0]!.clipA.sections.map((x) => x.text).join(' ')).toContain('uploaded product reference image');
 
     // The queue: Clip A then Clip B of video 1, then video 2 — never two clips in Flow at once.
@@ -303,7 +303,7 @@ describe('Reference images for Flow (product photo + character sheet)', () => {
     const { text } = studio.handOff(aff.id, clipA, flowPool.id);
     expect(text).toContain('Reference images uploaded with this prompt: the product reference image');
     expect(text).toContain('the character reference sheet');
-    expect(studio.view(aff.id, productRow).videos.find((v) => v.id === v1.id)!.clips[0]!.manualSteps.join(' ')).toContain('sheet.png');
+    expect(studio.view(aff.id, productRow).videos.find((v) => v.id === v1.id)!.clips[0]!.manualSteps.join(' ')).toContain('"2-character" (the character reference sheet)');
     // That Flow window is busy until this clip arrives or fails.
     const clipB = v1.clips.find((c) => c.slot === 'B')!.id;
     expect(await code(() => studio.handOff(aff.id, clipB, flowPool.id))).toBe('clip_action_not_allowed');

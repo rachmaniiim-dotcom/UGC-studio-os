@@ -296,8 +296,23 @@ export const duplicatePlans = (plans: ReadonlyArray<Pick<ClipPairPlan, 'clipA' |
   nearDuplicates(plans.map((p) => `${renderText(p.clipA)}\n${renderText(p.clipB)}`));
 
 /** Steps the owner does by hand in Google Flow for this plan. */
-export function clipManualSteps(continuity: ContinuityMode, slot: 'A' | 'B', referenceNames: readonly string[]): string[] {
-  const steps = referenceNames.map((n) => `Upload "${n}" in Google Flow as the product ingredient for this clip.`);
+/**
+ * What to do in Flow for one clip. The product photo and the character sheet travel as
+ * "1-product" and "2-character" in the folder that opens with "Send to Flow".
+ */
+export function clipManualSteps(
+  continuity: ContinuityMode,
+  slot: 'A' | 'B',
+  refs: { readonly product: boolean; readonly character: boolean; readonly others?: readonly string[] },
+): string[] {
+  const steps: string[] = [];
+  if (refs.product || refs.character) {
+    const files = [refs.product ? '"1-product" (the product photo)' : '', refs.character ? '"2-character" (the character reference sheet)' : ''].filter(Boolean).join(' and ');
+    steps.push(`In Flow, add ${files} as ingredients (image references) from the folder that opens with "Send to Flow", then paste the prompt.`);
+  }
+  if (!refs.product) steps.push('No product photo yet: on Products, tick "Use the listing photo…" and press "Fill from TikTok".');
+  if (!refs.character) steps.push('No character reference sheet yet: add one under "Reference images for Flow" so the person stays the same.');
+  for (const n of refs.others ?? []) steps.push(`Also add "${n}" in Flow as an ingredient.`);
   if (slot === 'B' && continuity === 'seamless') steps.push('Use Clip A\'s last frame (press "Export last frame" on Clip A) as the starting frame in Flow (frames to video).');
   return steps;
 }

@@ -696,9 +696,21 @@ function ClipCard(props: {
       {(c.status === 'received' || c.status === 'approved') && c.jobId && <Player src={`/media/job/${c.jobId}`} label={`Clip ${c.slot}`} />}
       <div className="actions">
         {canSend && (
-          <button type="button" className="primary" onClick={() => props.onSend(c.id)}>
-            Send to Flow
-          </button>
+          <>
+            <button
+              type="button"
+              className="primary"
+              onClick={async () => {
+                const r = await bridge.copyClipPrompt(accountId, c.id);
+                props.onNotice(r.ok ? { tone: 'ok', text: `Clip ${c.slot} prompt copied. Paste it in Flow; when the video is downloaded, press “Import clip file…” on this clip.` } : errNotice(r.error));
+              }}
+            >
+              Copy prompt
+            </button>
+            <button type="button" onClick={() => props.onSend(c.id)}>
+              Send to Flow
+            </button>
+          </>
         )}
         {c.status === 'in_flow' && (
           <>

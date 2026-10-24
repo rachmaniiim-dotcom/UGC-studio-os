@@ -132,6 +132,10 @@ const GENERIC_TITLE = /^(tiktok|tiktok shop|security check|loading|product)$/i;
 
 const PROMO = /\b(diskon|promo|voucher|gratis ongkir|ongkir|flash ?sale|cod|cashback|checkout|beli sekarang|order sekarang|stok terbatas|terlaris|best ?seller|termurah|harga|rp\s?\d)/i;
 
+/** Shop and listing stats, not product features: "190.7K sold", "9.4K+ followers", "4.8 rating", "Shop X on TikTok Shop". */
+const STATS =
+  /(\d[\d.,]*\s*(k|rb|jt|m)?\+?\s*(sold|terjual|followers?|pengikut|reviews?|ulasan|penilaian|ratings?)\b)|\b(terjual|sold)\s*\d|\b(rating|bintang|stars?)\b|\bshop\b.*\bon tiktok\b|\b(tiktok shop|tokopedia)\b|\b(followers?|pengikut)\b/i;
+
 /** Short feature lines from a product description (bullets, lines, sentences), promotions left out. */
 export function featuresFromDescription(description: string, max = 6): string[] {
   const parts = description
@@ -151,7 +155,7 @@ export function featuresFromDescription(description: string, max = 6): string[] 
   const seen = new Set<string>();
   for (const p of parts) {
     if (p.length < 6 || p.length > 120) continue;
-    if (/https?:\/\/|www\./i.test(p) || /^#/.test(p) || PROMO.test(p)) continue;
+    if (/https?:\/\/|www\./i.test(p) || /^#/.test(p) || PROMO.test(p) || STATS.test(p)) continue;
     if (/^(deskripsi|description|spesifikasi|specification|detail produk|product details?|manfaat|keunggulan|kelebihan|fitur|features?|benefits?|komposisi|ingredients|cara pakai)\b/i.test(p) && p.length < 30) continue;
     const k = p.toLowerCase();
     if (seen.has(k)) continue;

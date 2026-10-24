@@ -889,7 +889,8 @@ export class AffiliateStudioService {
     const photo = this.#productPhoto(r.bundle_id, r.product_row_id);
     const characterText = (JSON.parse(r.axes_json) as Record<string, string>)['character'] ?? '';
     const sheet = characterText ? this.#characterAsset(r.bundle_id, characterText) : null;
-    const refNames = [...(photo ? [photo.name] : []), ...(sheet ? [sheet.name] : []), ...this.#deps.assets(r.bundle_id).filter((a) => config.referenceAssetIds.includes(a.id) && a.id !== photo?.id).map((a) => a.name)];
+    const others = this.#deps.assets(r.bundle_id).filter((a) => config.referenceAssetIds.includes(a.id) && a.id !== photo?.id && a.id !== sheet?.id).map((a) => a.name);
+    const refs = { product: photo !== null, character: sheet !== null, others };
     const product = this.#db.prepare('SELECT showcase_state FROM affiliate_products WHERE id = ?').get(r.product_row_id) as { showcase_state: string } | undefined;
     const clipView = (c: ClipRow): ClipView => ({
       id: c.id,
@@ -901,7 +902,7 @@ export class AffiliateStudioService {
       attempts: c.attempts,
       credits: c.credits,
       lastReason: c.last_reason,
-      manualSteps: clipManualSteps(r.continuity, c.slot, refNames),
+      manualSteps: clipManualSteps(r.continuity, c.slot, refs),
       updatedAt: c.updated_at,
     });
     const clipA = JSON.parse(r.clip_a_json) as PromptContent;
