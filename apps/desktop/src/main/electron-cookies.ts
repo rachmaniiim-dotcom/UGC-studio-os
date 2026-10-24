@@ -69,9 +69,11 @@ export interface LoadResult {
   readonly failures: Partial<Record<BrowserLoadIssue, number>>;
 }
 
-/** Replaces all cookies in a partition with `cookies`, then flushes them to disk. */
-export async function replaceCookies(ses: Session, cookies: readonly NormalizedCookie[]): Promise<LoadResult> {
-  await ses.clearStorageData({ storages: ['cookies'] });
+/**
+ * Sets each cookie on its own: one the browser refuses (or can't take, like a
+ * partitioned cookie) is counted and skipped, and never undoes the others.
+ */
+export async function applyCookies(ses: Pick<Session, 'cookies'>, cookies: readonly NormalizedCookie[]): Promise<LoadResult> {
   const accepted: NormalizedCookie[] = [];
   const failures: Partial<Record<BrowserLoadIssue, number>> = {};
   for (const cookie of cookies) {
@@ -88,6 +90,13 @@ export async function replaceCookies(ses: Session, cookies: readonly NormalizedC
       failures.rejected_by_browser = (failures.rejected_by_browser ?? 0) + 1;
     }
   }
-  await ses.cookies.flushStore();
   return { loaded: accepted.length, cookies: accepted, failures };
+}
+
+/** Replaces all cookies in a partition with `cookies`, then flushes them to disk. */
+export async function replaceCookies(ses: Session, cookies: readonly NormalizedCookie[]): Promise<LoadResult> {
+  await ses.clearStorageData({ storages: ['cookies'] });
+  const result = await applyCookies(ses, cookies);
+  await ses.cookies.flushStore();
+  return result;
 }

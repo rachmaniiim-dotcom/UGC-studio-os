@@ -40,6 +40,8 @@ export interface SessionRestoreSummary {
   readonly count: number;
   /** A reason code only; never cookie content or OS error text. */
   readonly error: string | null;
+  /** Cookies the browser refused or can't take back (e.g. partitioned ones), skipped without undoing the rest. */
+  readonly skipped?: number;
 }
 
 /**

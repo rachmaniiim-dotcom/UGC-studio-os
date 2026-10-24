@@ -51,3 +51,31 @@ describe('toElectronCookie', () => {
     });
   });
 });
+
+describe('applyCookies (session restore and import)', () => {
+  it('a cookie the browser refuses is skipped and counted; the others stay set and nothing is removed', async () => {
+    const { applyCookies } = await import('../src/main/electron-cookies.js');
+    const cookies = ['a', 'refuse-me', 'b'].map((name) => normalize(cookieEditorEntry({ name, value: `v-${name}` })));
+    const set: string[] = [];
+    let removed = 0;
+    const ses = {
+      cookies: {
+        set: async (d: { name?: string }) => {
+          if (d.name === 'refuse-me') throw new Error('Failed to set cookie (content may be echoed here)');
+          set.push(d.name ?? '');
+        },
+        remove: async () => {
+          removed++;
+        },
+      },
+    } as unknown as Parameters<typeof applyCookies>[0];
+    const r = await applyCookies(ses, cookies);
+    expect(r.loaded).toBe(2);
+    expect(r.cookies.map((c) => c.name)).toEqual(['a', 'b']);
+    expect(r.failures).toEqual({ rejected_by_browser: 1 });
+    expect(set).toEqual(['a', 'b']);
+    expect(removed).toBe(0);
+    // The browser's own message (which can echo cookie content) is not kept anywhere in the result.
+    expect(JSON.stringify(r.failures)).not.toContain('echoed');
+  });
+});

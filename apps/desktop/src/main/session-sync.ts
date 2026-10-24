@@ -15,7 +15,7 @@ import {
   type PlatformDefinition,
   type RestoreBinding,
 } from '@ugc/core';
-import { fromElectronSessionCookie, toElectronCookie } from './electron-cookies.js';
+import { applyCookies, fromElectronSessionCookie } from './electron-cookies.js';
 import { PROFILE_ID, type PocProfile, type ProfileStore, type SessionRestoreSummary, type SessionSyncState } from './profiles.js';
 
 /**
@@ -369,8 +369,8 @@ export class SessionSync {
       }
       revision = Math.max(revision, restored.revision);
       this.#digests.set(profile.id, digestOf(restored.cookies));
-      summary = { at: new Date().toISOString(), state: 'restored', count: restored.cookies.length, error: null };
-      log.info('session_restored', { profileId: profile.id, revision: restored.revision, count: restored.cookies.length });
+      summary = { at: new Date().toISOString(), state: 'restored', count: restored.cookies.length, error: null, skipped: restored.skipped };
+      log.info('session_restored', { profileId: profile.id, revision: restored.revision, count: restored.cookies.length, skipped: restored.skipped, skippedReasons: restored.reasons });
     } catch (err) {
       const code = err instanceof RestoreFailure ? err.code : 'internal_error';
       this.#digests.set(profile.id, digestOf([]));
@@ -385,23 +385,18 @@ export class SessionSync {
     });
   }
 
-  /** Returns null when there is nothing to restore; throws RestoreFailure on any problem. */
-  async #restore(profile: PocProfile): Promise<{ revision: number; cookies: readonly NormalizedCookie[] } | null> {
+  /**
+   * Returns null when there is nothing to restore; throws RestoreFailure when
+   * the snapshot can't be trusted or the browser takes none of it. Cookies are
+   * set one by one: a cookie the browser refuses (or can't take, like a
+   * partitioned one) is skipped and counted, and never undoes the others,
+   * so one bad cookie can't wipe a working login.
+   */
+  async #restore(profile: PocProfile): Promise<{ revision: number; cookies: readonly NormalizedCookie[]; skipped: number; reasons: Partial<Record<string, number>> } | null> {
     const decoded = readSnapshot(this.#deps.dir, profile, this.#deps.platformOf(profile)?.cookieDomains ?? []);
     if (!decoded) return null;
-    const ses = this.#deps.sessionOf(profile);
-    const set: Array<{ url: string; name: string }> = [];
-    for (const cookie of decoded.cookies) {
-      const converted = toElectronCookie(cookie);
-      try {
-        if (!converted.ok) throw new Error(converted.code);
-        await ses.cookies.set(converted.details);
-        set.push({ url: converted.details.url, name: converted.details.name ?? '' });
-      } catch {
-        await Promise.allSettled(set.map((c) => ses.cookies.remove(c.url, c.name)));
-        throw new RestoreFailure('browser_rejected');
-      }
-    }
-    return { revision: decoded.revision, cookies: decoded.cookies };
+    const result = await applyCookies(this.#deps.sessionOf(profile), decoded.cookies);
+    if (decoded.cookies.length > 0 && result.loaded === 0) throw new RestoreFailure('browser_rejected');
+    return { revision: decoded.revision, cookies: result.cookies, skipped: decoded.cookies.length - result.loaded, reasons: result.failures };
   }
 }
