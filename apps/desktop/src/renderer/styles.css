@@ -228,3 +228,12 @@ details.settings > summary { cursor: pointer; }
   flex: 0 1 220px;
   margin: 0;
 }
+ul.characters {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+}
+ul.characters li {
+  padding: 6px 0;
+  border-top: 1px solid var(--border, #e3e6ea);
+}

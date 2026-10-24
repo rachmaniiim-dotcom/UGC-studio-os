@@ -31,7 +31,7 @@ async function setup() {
   const pool = new FlowPoolService(meta, bundles, log, flowSessionOf);
   const prompts = new PromptStudioService({ meta, bundles, jobs, generation: null, provider: new TemplateProvider(), log, userData, sensitiveValues: () => [] });
   const ffmpeg = await FfmpegRunner.locate();
-  const studio = new AffiliateStudioService({ meta, bundles, jobs, library, pool, log, assets: (b) => prompts.assets(b), ffmpeg: () => ffmpeg, flowSessionOf });
+  const studio = new AffiliateStudioService({ meta, bundles, jobs, library, pool, log, assets: (b) => prompts.assets(b), referencePath: (b, id) => prompts.referencePath(b, id), ffmpeg: () => ffmpeg, flowSessionOf });
   const make = (name: string, mode: 'affiliate_ugc' | 'account_growth' | 'flow_pool') => {
     const b = bundles.create({ displayName: name, mode }, platformsForMode(mode).map((p) => ({ platformId: p.id, label: p.id, optional: p.optional })), profiles);
     const flow = profiles.forBundle(b.id).find((p) => p.platformId === 'google-flow')!;
@@ -254,6 +254,61 @@ describe('A3: listing fill, one-click videos and the clip queue', () => {
     const drafts = studio.view(aff.id, productRow).videos.filter((v) => v.status === 'draft');
     expect(drafts).toHaveLength(3);
     expect(studio.approveAll(aff.id, productRow)).toEqual({ approved: 3, blocked: 0 });
+  });
+});
+
+describe('Reference images for Flow (product photo + character sheet)', () => {
+  it('each plan character needs one sheet; sending is refused without references; the copied prompt names the uploaded images; one clip per Flow window', async () => {
+    const env = await setup();
+    const { studio, products, prompts, aff, flowPool, productRow, userData } = env;
+    const png = (name: string, seed: number) => {
+      const f = join(userData, name);
+      writeFileSync(f, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, seed)]));
+      return f;
+    };
+    products.applyListing(aff.id, productRow, { title: 'Serum Glow Sintetis 30 ml', shopName: '', priceIdr: null, description: '', features: ['Isi 30 ml'] }, null);
+    studio.saveConfig(aff.id, { ...studio.config(aff.id), count: 2 });
+    studio.makeVideos(aff.id, productRow);
+    const view = studio.view(aff.id, productRow);
+    const used = new Set(view.videos.map((v) => v.axes['character']));
+    expect(view.characters.map((c) => c.text).sort()).toEqual([...used].sort());
+    expect(view.characters.every((c) => c.assetId === null && c.sheetPrompt.startsWith('Character reference sheet of ') && c.sheetPrompt.includes(c.text))).toBe(true);
+    expect(view.productPhoto).toBeNull();
+
+    const v1 = [...view.videos].sort((a, b) => a.position - b.position)[0]!;
+    const clipA = v1.clips.find((c) => c.slot === 'A')!.id;
+    expect(await code(() => studio.requireReferences(aff.id, clipA))).toBe('references_missing');
+    try {
+      studio.requireReferences(aff.id, clipA);
+    } catch (e) {
+      expect((e as { details: string[] }).details).toEqual(['product_photo', 'character_sheet']);
+    }
+
+    // Product photo (from the listing) and the character's sheet.
+    const photo = await prompts.addReference(aff.id, png('listing.png', 1), true);
+    products.applyListing(aff.id, productRow, { title: 'Serum Glow Sintetis 30 ml', shopName: '', priceIdr: null, description: '', features: ['Isi 30 ml'] }, photo.id);
+    const character = studio.view(aff.id, productRow).characters.find((c) => c.text === v1.axes['character'])!;
+    const sheet = await prompts.addReference(aff.id, png('sheet.png', 2), true);
+    expect(await code(() => studio.setCharacterImage(aff.id, productRow, 'ffffffffffffffff', sheet.id))).toBe('unknown_character');
+    studio.setCharacterImage(aff.id, productRow, character.key, sheet.id);
+    const refs = studio.requireReferences(aff.id, clipA);
+    expect(refs.product?.path).toBe(prompts.referencePath(aff.id, photo.id));
+    expect(refs.character?.path).toBe(prompts.referencePath(aff.id, sheet.id));
+    expect(studio.view(aff.id, productRow).characters.find((c) => c.key === character.key)).toMatchObject({ assetId: sheet.id });
+    // The same character in another video reuses the sheet (keyed by the description).
+    const sameCharacter = studio.view(aff.id, productRow).videos.filter((v) => v.axes['character'] === v1.axes['character']);
+    for (const v of sameCharacter) expect(studio.clipReferences(aff.id, v.clips[1]!.id).character?.id).toBe(sheet.id);
+
+    // The prompt copied for Flow names both images; the manual steps list them.
+    const { text } = studio.handOff(aff.id, clipA, flowPool.id);
+    expect(text).toContain('Reference images uploaded with this prompt: the product reference image');
+    expect(text).toContain('the character reference sheet');
+    expect(studio.view(aff.id, productRow).videos.find((v) => v.id === v1.id)!.clips[0]!.manualSteps.join(' ')).toContain('sheet.png');
+    // That Flow window is busy until this clip arrives or fails.
+    const clipB = v1.clips.find((c) => c.slot === 'B')!.id;
+    expect(await code(() => studio.handOff(aff.id, clipB, flowPool.id))).toBe('clip_action_not_allowed');
+    studio.clipFailed(aff.id, clipA, 'render_error');
+    expect(studio.handOff(aff.id, clipB, flowPool.id).flowBundleId).toBe(flowPool.id);
   });
 });
 

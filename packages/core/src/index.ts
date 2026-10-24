@@ -204,6 +204,9 @@ export {
   type ContinuityMode,
   type PlanFlag,
   type ProductIssue,
+  characterKey,
+  characterSheetPrompt,
+  referenceLine,
 } from './affiliate/creative.js';
 export {
   checkClip,

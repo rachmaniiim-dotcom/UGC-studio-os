@@ -448,6 +448,15 @@ export const MIGRATIONS: readonly Migration[] = [
      cost_usd REAL NOT NULL,
      ok INTEGER NOT NULL
    );`,
+  // 11: Affiliate character reference images (one per character description, per account), uploaded with each clip.
+  `CREATE TABLE affiliate_characters (
+     bundle_id TEXT NOT NULL REFERENCES account_bundles(id),
+     character_key TEXT NOT NULL,
+     character_text TEXT NOT NULL,
+     asset_id TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     PRIMARY KEY (bundle_id, character_key)
+   );`,
 ];
 
 export class MetadataDb {

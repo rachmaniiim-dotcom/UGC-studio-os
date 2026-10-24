@@ -1,6 +1,6 @@
 import { BrowserWindow as Windows, clipboard, dialog, ipcMain, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
-import { readdir, readFile, rm, stat } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { copyFile, mkdir, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { extname, isAbsolute, join } from 'node:path';
 import {
   DEFAULT_MAX_BYTES,
   bundleStatus,
@@ -123,6 +123,8 @@ export type IpcErrorCode =
   | 'invalid_limits'
   | 'invalid_reason'
   | 'nothing_to_send'
+  | 'references_missing'
+  | 'unknown_character'
   | 'not_growth_account'
   | 'unknown_queue_item'
   | 'queue_action_not_allowed'
@@ -423,6 +425,33 @@ export function registerIpc({
     const win = openSiteWindow(profile.partition, `${profile.label} — ${label}`, url, platform.navigationDomains, devTools, log);
     proxies?.watchWindow(win.webContents);
     return win;
+  };
+
+  /**
+   * Takes one clip to a Flow window: checks its reference images (product photo and character sheet;
+   * the owner may send without them), copies the prompt, opens Flow, and opens a folder holding just
+   * this clip's reference images to drag into Flow as ingredients.
+   */
+  const takeClipToFlow = async (bundleId: string, clipId: string, flowBundleId: string | null, allowMissing: boolean): Promise<{ product: boolean; character: boolean; folder: string | null }> => {
+    const refs = aStudioCall(() => (allowMissing ? affiliateStudio.clipReferences(bundleId, clipId) : affiliateStudio.requireReferences(bundleId, clipId)));
+    const target = flowBundleId ?? poolCall(() => pool.pick()).id;
+    await requireNetworkReady(bundleProfile(target, 'google-flow'));
+    const { text, flowBundleId: used } = aStudioCall(() => affiliateStudio.handOff(bundleId, clipId, target));
+    clipboard.writeText(text);
+    const profile = bundleProfile(used, 'google-flow');
+    await openInAccount(used, 'google-flow', platformOf(profile)!.pages['home']!, 'Flow');
+    let folder: string | null = null;
+    const files = [refs.product && { from: refs.product.path, name: `1-product${extname(refs.product.path)}` }, refs.character && { from: refs.character.path, name: `2-character${extname(refs.character.path)}` }].filter(
+      (f): f is { from: string; name: string } => !!f,
+    );
+    if (files.length > 0) {
+      folder = join(library.dirFor(bundleId), 'flow-references', clipId);
+      await rm(folder, { recursive: true, force: true });
+      await mkdir(folder, { recursive: true });
+      for (const f of files) await copyFile(f.from, join(folder, f.name));
+      await shell.openPath(folder);
+    }
+    return { product: refs.product !== null, character: refs.character !== null, folder };
   };
 
   const studioError = (err: unknown): never => {
@@ -1138,16 +1167,11 @@ export function registerIpc({
     // Takes a clip to a Flow account (pool by credits, or a named Flow account): prompt on the
     // clipboard, that account's Flow window opened behind its own proxy. Generation is the owner's.
     'astudio:hand-off': async (payload) => {
-      const request = requireObject(payload, ['bundleId', 'productRowId', 'clipId', 'flowBundleId']);
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'clipId', 'flowBundleId', 'allowMissingReferences']);
       const bundle = requireBundle(request);
       const clipId = requireId(request, 'clipId');
       const flowBundleId = request['flowBundleId'] === null ? null : requireId(request, 'flowBundleId');
-      const target = flowBundleId ?? poolCall(() => pool.pick()).id;
-      await requireNetworkReady(bundleProfile(target, 'google-flow'));
-      const { text, flowBundleId: used } = aStudioCall(() => affiliateStudio.handOff(bundle.id, clipId, target));
-      clipboard.writeText(text);
-      const profile = bundleProfile(used, 'google-flow');
-      await openInAccount(used, 'google-flow', platformOf(profile)!.pages['home']!, 'Flow');
+      await takeClipToFlow(bundle.id, clipId, flowBundleId, request['allowMissingReferences'] === true);
       return aStudioCall(() => affiliateStudio.view(bundle.id, requireId(request, 'productRowId')));
     },
 
@@ -1168,18 +1192,39 @@ export function registerIpc({
 
     // A3: the next clip in order goes to Flow (same checks as a single hand-off).
     'astudio:send-next': async (payload) => {
-      const request = requireObject(payload, ['bundleId', 'productRowId', 'flowBundleId']);
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'flowBundleId', 'allowMissingReferences']);
       const bundle = requireBundle(request);
       const productRowId = requireId(request, 'productRowId');
       const flowBundleId = request['flowBundleId'] === null ? null : requireId(request, 'flowBundleId');
       const clipId = aStudioCall(() => affiliateStudio.nextClip(bundle.id, productRowId));
-      const target = flowBundleId ?? poolCall(() => pool.pick()).id;
-      await requireNetworkReady(bundleProfile(target, 'google-flow'));
-      const { text, flowBundleId: used } = aStudioCall(() => affiliateStudio.handOff(bundle.id, clipId, target));
-      clipboard.writeText(text);
-      const profile = bundleProfile(used, 'google-flow');
-      await openInAccount(used, 'google-flow', platformOf(profile)!.pages['home']!, 'Flow');
-      return { clipId, view: aStudioCall(() => affiliateStudio.view(bundle.id, productRowId)) };
+      const refs = await takeClipToFlow(bundle.id, clipId, flowBundleId, request['allowMissingReferences'] === true);
+      return { clipId, references: refs, view: aStudioCall(() => affiliateStudio.view(bundle.id, productRowId)) };
+    },
+
+    // A character's reference sheet: the owner makes it once in Flow (prompt copied here) and adds the image.
+    'astudio:copy-character-prompt': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'key']);
+      const bundle = requireBundle(request);
+      const c = aStudioCall(() => affiliateStudio.characters(bundle.id, requireId(request, 'productRowId'))).find((x) => x.key === request['key']);
+      if (!c) throw new IpcError('unknown_character');
+      clipboard.writeText(c.sheetPrompt);
+      return { copied: true };
+    },
+
+    'astudio:add-character-image': async (payload) => {
+      const request = requireObject(payload, ['bundleId', 'productRowId', 'key']);
+      const bundle = requireBundle(request);
+      const productRowId = requireId(request, 'productRowId');
+      const key = request['key'];
+      if (typeof key !== 'string' || !/^[0-9a-f]{16}$/.test(key)) throw new IpcError('invalid_request');
+      const win = mainWindow();
+      const options = { title: 'Add the character reference image (made in Flow)', properties: ['openFile' as const], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] };
+      const pick = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+      const file = pick.filePaths[0];
+      if (pick.canceled || !file) return { canceled: true };
+      const asset = await studioCallAsync(() => studio.addReference(bundle.id, file, true));
+      aStudioCall(() => affiliateStudio.setCharacterImage(bundle.id, productRowId, key, asset.id));
+      return { canceled: false, view: aStudioCall(() => affiliateStudio.view(bundle.id, productRowId)) };
     },
 
     'astudio:copy-clip': async (payload) => {

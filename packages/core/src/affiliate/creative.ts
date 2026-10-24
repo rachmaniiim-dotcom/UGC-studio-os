@@ -301,3 +301,42 @@ export function clipManualSteps(continuity: ContinuityMode, slot: 'A' | 'B', ref
   if (slot === 'B' && continuity === 'seamless') steps.push('Use Clip A\'s last frame (press "Export last frame" on Clip A) as the starting frame in Flow (frames to video).');
   return steps;
 }
+
+/** Stable key of a character description (whitespace and case don't matter). */
+export function characterKey(character: string): string {
+  const s = character.toLowerCase().replace(/\s+/g, ' ').trim();
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ c, 0x5bd1e995) >>> 0;
+  }
+  return `${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}`;
+}
+
+/**
+ * Prompt for Flow's image generator: one character reference sheet, made once
+ * and uploaded with every clip of that character so the same person appears
+ * in Clip A, Clip B and every video.
+ */
+export function characterSheetPrompt(character: string, style: string): string {
+  return [
+    `Character reference sheet of ${character.trim()}.`,
+    'One image on a plain light-grey studio background: full body front view, full body side view, full body back view, and three head-and-shoulders close-ups (neutral, laughing, surprised).',
+    'The same face, hairstyle, body and outfit in every view; even soft lighting; sharp focus.',
+    style.trim() ? `Look: ${style.trim()}` : '',
+    'No text, labels, logos, watermarks or props. Not a real or famous person.',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** Added to the prompt copied for Flow, naming the ingredients uploaded with it. */
+export function referenceLine(refs: { product: boolean; character: boolean }): string {
+  const parts = [
+    refs.product ? 'the product reference image (keep the product exactly as shown: shape, colour, packaging and label)' : '',
+    refs.character ? 'the character reference sheet (the main character must be this exact person: same face, hair, body and outfit)' : '',
+  ].filter(Boolean);
+  return parts.length > 0 ? `Reference images uploaded with this prompt: ${parts.join('; and ')}.` : '';
+}

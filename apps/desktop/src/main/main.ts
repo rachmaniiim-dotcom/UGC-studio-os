@@ -147,6 +147,7 @@ if (securityCheck) {
       pool,
       log,
       assets: (bundleId) => studio.assets(bundleId),
+      referencePath: (bundleId, assetId) => studio.referencePath(bundleId, assetId),
       ffmpeg: () => ffmpeg,
       flowSessionOf,
     });

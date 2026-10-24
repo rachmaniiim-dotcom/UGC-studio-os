@@ -54,6 +54,7 @@ test('the app UI gets only a frozen, narrow bridge and its CSP blocks injected s
       frozen: true,
       methods: [
         'addAffiliateProducts',
+        'addCharacterImage',
         'addFypReferences',
         'addProductImage',
         'addReference',
@@ -72,6 +73,7 @@ test('the app UI gets only a frozen, narrow bridge and its CSP blocks injected s
         'clipFailed',
         'confirmStatus',
         'copyCaption',
+        'copyCharacterPrompt',
         'copyClipPrompt',
         'copyPrompt',
         'createAccount',

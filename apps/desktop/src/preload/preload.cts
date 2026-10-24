@@ -66,10 +66,14 @@ contextBridge.exposeInMainWorld(
     generateVideoPlans: (bundleId: string, productRowId: string) => ipcRenderer.invoke('astudio:generate', { bundleId, productRowId }),
     updateVideoPlan: (bundleId: string, productRowId: string, videoId: string, edit: unknown) => ipcRenderer.invoke('astudio:update-plan', { bundleId, productRowId, videoId, edit }),
     videoPlanAction: (bundleId: string, productRowId: string, videoId: string, action: string) => ipcRenderer.invoke('astudio:plan-action', { bundleId, productRowId, videoId, action }),
-    handOffClip: (bundleId: string, productRowId: string, clipId: string, flowBundleId: string | null) => ipcRenderer.invoke('astudio:hand-off', { bundleId, productRowId, clipId, flowBundleId }),
+    handOffClip: (bundleId: string, productRowId: string, clipId: string, flowBundleId: string | null, allowMissingReferences = false) =>
+      ipcRenderer.invoke('astudio:hand-off', { bundleId, productRowId, clipId, flowBundleId, allowMissingReferences }),
     makeVideos: (bundleId: string, productRowId: string) => ipcRenderer.invoke('astudio:make-videos', { bundleId, productRowId }),
     approveAllPlans: (bundleId: string, productRowId: string) => ipcRenderer.invoke('astudio:approve-all', { bundleId, productRowId }),
-    sendNextClip: (bundleId: string, productRowId: string, flowBundleId: string | null) => ipcRenderer.invoke('astudio:send-next', { bundleId, productRowId, flowBundleId }),
+    sendNextClip: (bundleId: string, productRowId: string, flowBundleId: string | null, allowMissingReferences = false) =>
+      ipcRenderer.invoke('astudio:send-next', { bundleId, productRowId, flowBundleId, allowMissingReferences }),
+    copyCharacterPrompt: (bundleId: string, productRowId: string, key: string) => ipcRenderer.invoke('astudio:copy-character-prompt', { bundleId, productRowId, key }),
+    addCharacterImage: (bundleId: string, productRowId: string, key: string) => ipcRenderer.invoke('astudio:add-character-image', { bundleId, productRowId, key }),
     copyClipPrompt: (bundleId: string, clipId: string) => ipcRenderer.invoke('astudio:copy-clip', { bundleId, clipId }),
     clipFailed: (bundleId: string, productRowId: string, clipId: string, reason: string) => ipcRenderer.invoke('astudio:clip-failed', { bundleId, productRowId, clipId, reason }),
     markClipUnusable: (bundleId: string, productRowId: string, clipId: string, reason: string) => ipcRenderer.invoke('astudio:mark-unusable', { bundleId, productRowId, clipId, reason }),

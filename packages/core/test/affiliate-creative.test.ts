@@ -136,3 +136,19 @@ describe('FFmpeg helpers', () => {
     expect(args.at(-1)).toBe('out.mp4');
   });
 });
+
+describe('character reference sheets', () => {
+  it('keys are stable across spacing and case; the sheet prompt and the reference line say what Flow gets', async () => {
+    const { characterKey, characterSheetPrompt, referenceLine } = await import('../src/index.js');
+    expect(characterKey('An Indonesian  housewife')).toBe(characterKey(' an indonesian housewife '));
+    expect(characterKey('a')).not.toBe(characterKey('b'));
+    expect(characterKey('x')).toMatch(/^[0-9a-f]{16}$/);
+    const sheet = characterSheetPrompt('a synthetic grandmother in a batik blouse', 'Photorealistic.');
+    expect(sheet).toContain('Character reference sheet of a synthetic grandmother in a batik blouse.');
+    expect(sheet).toContain('full body front view');
+    expect(sheet).toContain('Not a real or famous person.');
+    expect(referenceLine({ product: true, character: false })).toContain('the product reference image');
+    expect(referenceLine({ product: true, character: true })).toContain('; and the character reference sheet');
+    expect(referenceLine({ product: false, character: false })).toBe('');
+  });
+});

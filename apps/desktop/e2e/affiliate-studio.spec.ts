@@ -74,6 +74,9 @@ test('A2: plan → Clip A/B by hand → FFmpeg join → review → Affiliate Vid
     const clipB = plan.locator('[data-clip-slot="B"]');
     const flowOpened = nextSiteWindow(run);
     await clipA.getByRole('button', { name: 'Send to Flow' }).click();
+    // No product photo or character sheet in this test: refused with the reason, then sent without them on purpose.
+    await expect(ui.getByTestId('astudio-notice')).toContainText('reference images aren’t ready');
+    await ui.getByRole('button', { name: 'send without reference images' }).click();
     const flow = await flowOpened;
     expect(new URL(flow.url()).hostname).toBe('google-flow.ugc-poc.test');
     expect(await run.app.evaluate(({ clipboard }) => clipboard.readText())).toContain('Clip A of 2');

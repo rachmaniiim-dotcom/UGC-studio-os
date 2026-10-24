@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startSyntheticProxy, startSyntheticSite, type SyntheticProxy, type SyntheticSite } from '@ugc/test-fixtures';
@@ -78,10 +79,47 @@ test('A3: link → listing read (after a security check) → one-click videos �
     await expect(ui.getByTestId('astudio-queue')).toContainText('6 clips to make');
     await ui.screenshot({ path: join(SHOTS, '07-a3-one-click-videos.png'), fullPage: false });
 
-    // Send next clip: video 1 Clip A goes to the pool's Flow window with its prompt on the clipboard.
+    // Without character sheets, sending is refused with what's missing.
+    await ui.getByRole('button', { name: 'Send next clip to Flow' }).click();
+    await expect(ui.getByTestId('astudio-notice')).toContainText('reference images aren’t ready');
+    await expect(ui.getByTestId('astudio-notice')).toContainText('Character reference sheet');
+    await expect(ui.getByTestId('astudio-product-photo')).toContainText('.png');
+    // Each character the plans use gets one sheet: its prompt is copied for Flow, the image is added here.
+    const characters = ui.getByTestId('astudio-characters').locator('li[data-character-key]');
+    const n = await characters.count();
+    expect(n).toBeGreaterThan(0);
+    for (let i = 0; i < n; i++) {
+      const li = characters.nth(i);
+      await li.getByRole('button', { name: 'Copy sheet prompt' }).click();
+      expect(await run.app.evaluate(({ clipboard }) => clipboard.readText())).toContain('Character reference sheet of');
+      const sheet = join(dir, `sheet-${i}.png`);
+      writeFileSync(sheet, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, i + 1)]));
+      await run.app.evaluate(({ dialog }, f) => {
+        dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [f] })) as unknown as typeof dialog.showOpenDialog;
+      }, sheet);
+      await li.getByRole('button', { name: 'Add sheet image…' }).click();
+      await expect(li).toHaveAttribute('data-has-image', 'yes');
+    }
+    const opened: string[] = [];
+    await run.app.evaluate(({ shell }) => {
+      (globalThis as { __opened?: string[] }).__opened = [];
+      shell.openPath = (async (p: string) => {
+        (globalThis as { __opened?: string[] }).__opened!.push(p);
+        return '';
+      }) as typeof shell.openPath;
+    });
+
+    // Send next clip: video 1 Clip A goes to the pool's Flow window with its prompt on the clipboard,
+    // and a folder with exactly its two reference images opens to drag into Flow.
     const flowOpened = nextSiteWindow(run);
     await ui.getByRole('button', { name: 'Send next clip to Flow' }).click();
     const flow = await flowOpened;
+    opened.push(...(await run.app.evaluate(() => (globalThis as { __opened?: string[] }).__opened ?? [])));
+    expect(opened).toHaveLength(1);
+    expect(existsSync(opened[0]!)).toBe(true);
+    expect(readdirSync(opened[0]!).sort()).toEqual(['1-product.png', '2-character.png']);
+    expect(await run.app.evaluate(({ clipboard }) => clipboard.readText())).toContain('Reference images uploaded with this prompt');
+    await expect(ui.getByTestId('astudio-notice')).toContainText('drag both into Flow as ingredients');
     expect(new URL(flow.url()).hostname).toBe('google-flow.ugc-poc.test');
     expect(await run.app.evaluate(({ clipboard }) => clipboard.readText())).toContain('Clip A of 2');
     expect(await run.app.evaluate(({ clipboard }) => clipboard.readText())).toContain('Serum Glow Sintetis 30 ml');

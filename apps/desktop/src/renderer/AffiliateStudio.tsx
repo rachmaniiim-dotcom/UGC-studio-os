@@ -92,6 +92,7 @@ export function AffiliateStudio(props: { account: Account | null; productRowId: 
   const [notice, setNotice] = useState<Notice>(null);
   const [flows, setFlows] = useState<PoolAccount[]>([]);
   const [flowChoice, setFlowChoice] = useState<string>('pool');
+  const [pendingSend, setPendingSend] = useState<{ clipId: string | null } | null>(null);
 
   const loadFlows = useCallback(async () => {
     const [p, o] = await Promise.all([bridge.flowPool(), bridge.flowOthers()]);
@@ -133,6 +134,23 @@ export function AffiliateStudio(props: { account: Account | null; productRowId: 
   };
   const flowTarget = flowChoice === 'pool' ? null : flowChoice;
   const product = view?.product;
+  /** Takes the next clip (clipId null) or one clip to Flow; refused without reference images unless allowMissing. */
+  const send = async (clipId: string | null, allowMissing = false): Promise<void> => {
+    const r = clipId === null ? await bridge.sendNextClip(account.id, productRowId, flowTarget, allowMissing) : await bridge.handOffClip(account.id, productRowId, clipId, flowTarget, allowMissing);
+    if (!r.ok) {
+      if (r.error.code === 'references_missing') setPendingSend({ clipId });
+      return setNotice(errNotice(r.error));
+    }
+    setPendingSend(null);
+    const v2 = 'view' in r.data ? r.data.view : r.data;
+    setView(v2);
+    void loadFlows();
+    const sentId = 'clipId' in r.data ? r.data.clipId : clipId;
+    const v = v2.videos.find((x) => x.clips.some((c) => c.id === sentId));
+    const c = v?.clips.find((x) => x.id === sentId);
+    const refs = allowMissing ? 'Sent without some reference images.' : 'A folder with 1-product and 2-character images is open: drag both into Flow as ingredients.';
+    setNotice({ tone: allowMissing ? 'warn' : 'ok', text: `Video ${v?.position ?? '?'} · Clip ${c?.slot ?? '?'}: prompt copied and Flow is open. ${refs} In Flow: New project → add the images → paste the prompt → generate → download here.` });
+  };
   // The production queue (A3): drafts to approve, the clip in Flow, clips still to make.
   const producing = (view?.videos ?? []).filter((v) => v.status === 'approved' || v.status === 'producing');
   const inFlowVideo = view?.videos.find((v) => v.clips.some((c) => c.status === 'in_flow'));
@@ -204,6 +222,7 @@ export function AffiliateStudio(props: { account: Account | null; productRowId: 
               </span>
             </div>
           </section>
+          <Characters accountId={account.id} productRowId={productRowId} view={view} onView={setView} onNotice={setNotice} />
           <section className="card" aria-labelledby="plans-title">
             <h3 id="plans-title">Plans</h3>
             {view.today && (
@@ -257,17 +276,15 @@ export function AffiliateStudio(props: { account: Account | null; productRowId: 
                 type="button"
                 className={queue.next ? 'primary' : ''}
                 disabled={!queue.next || queue.inFlow !== null}
-                onClick={async () => {
-                  const r = await bridge.sendNextClip(account.id, productRowId, flowTarget);
-                  if (!r.ok) return setNotice(errNotice(r.error));
-                  setView(r.data.view);
-                  const v = r.data.view.videos.find((x) => x.clips.some((c) => c.id === r.data.clipId));
-                  const c = v?.clips.find((x) => x.id === r.data.clipId);
-                  setNotice({ tone: 'ok', text: `Video ${v?.position ?? '?'} · Clip ${c?.slot ?? '?'}: prompt copied, Flow is open. Paste it, generate, and download the video there; it lands here by itself.` });
-                }}
+                onClick={() => void send(null)}
               >
                 Send next clip to Flow
               </button>
+              {pendingSend && (
+                <button type="button" className="link" onClick={() => void send(pendingSend.clipId, true)}>
+                  send without reference images
+                </button>
+              )}
               <span className="small muted" data-testid="astudio-queue">
                 {queue.inFlow
                   ? `Video ${queue.inFlow.position} · Clip ${queue.inFlow.slot} is in Flow: download it there, or press “Generation failed” on it.`
@@ -303,6 +320,7 @@ export function AffiliateStudio(props: { account: Account | null; productRowId: 
                 flowTarget={flowTarget}
                 call={call}
                 onNotice={setNotice}
+                onSend={(clipId) => void send(clipId)}
               />
             ))}
           </section>
@@ -440,6 +458,7 @@ function Settings(props: { accountId: string; productRowId: string; view: Affili
 }
 
 function PlanCard(props: {
+  onSend: (clipId: string) => void;
   accountId: string;
   productRowId: string;
   v: AffiliateVideoView;
@@ -576,7 +595,7 @@ function PlanCard(props: {
       {production && (
         <div className="clip-columns production">
           {v.clips.map((c) => (
-            <ClipCard key={c.id} accountId={accountId} productRowId={productRowId} c={c} max={props.limits.maxClipAttempts} flowTarget={props.flowTarget} call={call} onNotice={props.onNotice} />
+            <ClipCard key={c.id} accountId={accountId} productRowId={productRowId} c={c} max={props.limits.maxClipAttempts} flowTarget={props.flowTarget} call={call} onNotice={props.onNotice} onSend={props.onSend} />
           ))}
         </div>
       )}
@@ -637,6 +656,7 @@ function PlanCard(props: {
 }
 
 function ClipCard(props: {
+  onSend: (clipId: string) => void;
   accountId: string;
   productRowId: string;
   c: ClipView;
@@ -676,7 +696,7 @@ function ClipCard(props: {
       {(c.status === 'received' || c.status === 'approved') && c.jobId && <Player src={`/media/job/${c.jobId}`} label={`Clip ${c.slot}`} />}
       <div className="actions">
         {canSend && (
-          <button type="button" className="primary" onClick={() => void call(bridge.handOffClip(accountId, productRowId, c.id, props.flowTarget), `Clip ${c.slot} prompt copied; Flow opened.`)}>
+          <button type="button" className="primary" onClick={() => props.onSend(c.id)}>
             Send to Flow
           </button>
         )}
@@ -723,5 +743,71 @@ function ClipCard(props: {
         )}
       </div>
     </div>
+  );
+}
+
+/** Each character used by this product's plans needs one reference sheet, made once in Flow and reused for every clip. */
+function Characters(props: { accountId: string; productRowId: string; view: AffiliateStudioView; onView: (v: AffiliateStudioView) => void; onNotice: (n: Notice) => void }): React.JSX.Element | null {
+  const { view } = props;
+  if (view.characters.length === 0 && view.videos.length === 0) return null;
+  const missing = view.characters.filter((c) => !c.assetId).length;
+  return (
+    <section className="card" aria-labelledby="characters-title" data-testid="astudio-characters">
+      <h3 id="characters-title">Reference images for Flow</h3>
+      <p className="small muted">
+        Every clip is generated in Flow with two ingredients: the product photo and the character’s reference sheet, so the product and the person stay the same in
+        Clip A, Clip B and every video. Make each character’s sheet once in Flow (copy its prompt, generate an image, download it) and add it here.
+      </p>
+      <div className="small" data-testid="astudio-product-photo">
+        <strong>Product photo:</strong>{' '}
+        {view.productPhoto ? (
+          <Badge tone="ok">{view.productPhoto.name}</Badge>
+        ) : (
+          <Badge tone="warn">missing: on Products, tick “Use the listing photo…” and press “Fill from TikTok”</Badge>
+        )}
+      </div>
+      {view.characters.length > 0 && (
+        <ul className="characters">
+          {view.characters.map((c) => (
+            <li key={c.key} data-character-key={c.key} data-has-image={c.assetId ? 'yes' : 'no'}>
+              <div className="small">
+                <strong>{c.text}</strong> <span className="muted">· {c.plans} plan{c.plans === 1 ? '' : 's'}</span>{' '}
+                {c.assetId ? <Badge tone="ok">sheet: {c.assetName}</Badge> : <Badge tone="warn">no reference sheet yet</Badge>}
+              </div>
+              <div className="actions">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const r = await bridge.copyCharacterPrompt(props.accountId, props.productRowId, c.key);
+                    props.onNotice(
+                      r.ok
+                        ? { tone: 'ok', text: 'Character-sheet prompt copied. In Flow, create an image (not a video) with it, download the image, then press “Add sheet image…”.' }
+                        : errNotice(r.error),
+                    );
+                  }}
+                >
+                  Copy sheet prompt
+                </button>
+                <button
+                  type="button"
+                  className={c.assetId ? '' : 'primary'}
+                  onClick={async () => {
+                    const r = await bridge.addCharacterImage(props.accountId, props.productRowId, c.key);
+                    if (!r.ok) return props.onNotice(errNotice(r.error));
+                    if (!r.data.canceled) {
+                      props.onView(r.data.view);
+                      props.onNotice({ tone: 'ok', text: 'Reference sheet saved for this character; it goes into Flow with every clip that uses them.' });
+                    }
+                  }}
+                >
+                  {c.assetId ? 'Replace sheet image…' : 'Add sheet image…'}
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {missing > 0 && <p className="small warn-text">{missing} character{missing === 1 ? '' : 's'} without a reference sheet: their clips can’t keep the same person.</p>}
+    </section>
   );
 }

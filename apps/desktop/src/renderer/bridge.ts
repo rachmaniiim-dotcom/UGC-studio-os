@@ -342,6 +342,8 @@ export interface AffiliateStudioView {
   limits: { maxClipAttempts: number; videosPerProductPerDay: number };
   ffmpeg: { available: boolean; version: string | null };
   references: ReferenceAsset[];
+  characters: Array<{ key: string; text: string; assetId: string | null; assetName: string | null; sheetPrompt: string; plans: number }>;
+  productPhoto: { id: string; name: string } | null;
   videos: AffiliateVideoView[];
   today: { attempts: number; generationFailed: number; unusable: number; clipsApproved: number; finalsApproved: number; startedToday: number } | null;
 }
@@ -538,10 +540,17 @@ interface UgcBridge {
     edit: { clipA: Array<{ key: string; text: string }>; clipB: Array<{ key: string; text: string }>; caption: string },
   ): Promise<Result<AffiliateStudioView>>;
   videoPlanAction(bundleId: string, productRowId: string, videoId: string, action: 'approve' | 'reject' | 'reopen'): Promise<Result<AffiliateStudioView>>;
-  handOffClip(bundleId: string, productRowId: string, clipId: string, flowBundleId: string | null): Promise<Result<AffiliateStudioView>>;
+  handOffClip(bundleId: string, productRowId: string, clipId: string, flowBundleId: string | null, allowMissingReferences?: boolean): Promise<Result<AffiliateStudioView>>;
   makeVideos(bundleId: string, productRowId: string): Promise<Result<{ batchId: string; approved: number; blocked: number; view: AffiliateStudioView }>>;
   approveAllPlans(bundleId: string, productRowId: string): Promise<Result<{ approved: number; blocked: number; view: AffiliateStudioView }>>;
-  sendNextClip(bundleId: string, productRowId: string, flowBundleId: string | null): Promise<Result<{ clipId: string; view: AffiliateStudioView }>>;
+  sendNextClip(
+    bundleId: string,
+    productRowId: string,
+    flowBundleId: string | null,
+    allowMissingReferences?: boolean,
+  ): Promise<Result<{ clipId: string; references: { product: boolean; character: boolean; folder: string | null }; view: AffiliateStudioView }>>;
+  copyCharacterPrompt(bundleId: string, productRowId: string, key: string): Promise<Result<{ copied: boolean }>>;
+  addCharacterImage(bundleId: string, productRowId: string, key: string): Promise<Result<{ canceled: true } | { canceled: false; view: AffiliateStudioView }>>;
   copyClipPrompt(bundleId: string, clipId: string): Promise<Result<{ copied: boolean }>>;
   clipFailed(bundleId: string, productRowId: string, clipId: string, reason: string): Promise<Result<AffiliateStudioView>>;
   markClipUnusable(bundleId: string, productRowId: string, clipId: string, reason: string): Promise<Result<AffiliateStudioView>>;
@@ -702,6 +711,8 @@ const MESSAGES: Record<string, [message: string, recovery: string]> = {
   video_too_large: ['The video is too large to analyze (over 500 MB).', 'Write its caption yourself.'],
   invalid_analysis_settings: ['Some analysis settings are invalid.', 'Fix the fields listed below.'],
   secure_storage_unavailable: ['Windows secure storage isn’t available, so the API key can’t be saved safely.', 'Run the app as your normal Windows user.'],
+  references_missing: ['This clip’s reference images aren’t ready.', 'Add what’s listed below (product photo: “Fill from TikTok” with the photo option; character: “Characters” on this screen), or send without them.'],
+  unknown_character: ['That character isn’t used by this product’s plans.', 'Refresh the screen.'],
   nothing_to_send: ['No clip to send right now.', 'If a clip is still in Flow, download it there (or mark it failed) first; otherwise make or approve plans.'],
   listing_unreadable: ['The product page couldn’t be read.', 'Look at the TikTok window: complete any security check or sign-in there, then press “Fill from TikTok” again. You can still type the details in “Edit details”.'],
   not_pool_account: ['That isn’t a Flow pool account.', 'Choose an account created as “Flow pool”.'],
@@ -839,6 +850,9 @@ const FIELD_MESSAGES: Record<string, string> = {
   duplicate_in_other_account: 'The same video file is also in another account’s queue.',
   not_mp4: 'not an .mp4 file',
   not_a_video: 'not a playable MP4',
+  another_clip_in_flow: 'That Flow account is still making another clip: download it there or press “Generation failed” on it first (or choose another Flow account).',
+  product_photo: 'Product photo: on Products, tick “Use the listing photo…” and press “Fill from TikTok”.',
+  character_sheet: 'Character reference sheet: under “Reference images for Flow”, copy the sheet prompt, make it in Flow and add the image.',
   video_file_too_large: 'larger than 512 MB',
 };
 

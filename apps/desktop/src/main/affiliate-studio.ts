@@ -7,12 +7,15 @@ import {
   BLOCKING_PLAN_FLAGS,
   checkClip,
   checkFinal,
+  characterKey,
+  characterSheetPrompt,
   clipManualSteps,
   DEFAULT_AFFILIATE_CONFIG,
   duplicatePlans,
   planClipPairs,
   planFlags,
   productReadiness,
+  referenceLine,
   productSummary,
   renderText,
   validateAffiliateConfig,
@@ -62,7 +65,9 @@ export type AffiliateStudioErrorCode =
   | 'stitch_failed'
   | 'invalid_limits'
   | 'invalid_reason'
-  | 'nothing_to_send';
+  | 'nothing_to_send'
+  | 'references_missing'
+  | 'unknown_character';
 
 export class AffiliateStudioError extends Error {
   constructor(
@@ -147,12 +152,33 @@ export interface StudioProduct {
   readonly features: readonly string[];
 }
 
+export interface StudioCharacter {
+  readonly key: string;
+  readonly text: string;
+  readonly assetId: string | null;
+  readonly assetName: string | null;
+  readonly sheetPrompt: string;
+  /** Plans of this product that use it (not rejected). */
+  readonly plans: number;
+}
+
+/** What goes into Flow with one clip: its reference images. */
+export interface ClipReferences {
+  readonly product: { id: string; name: string; path: string } | null;
+  readonly character: { id: string; name: string; path: string } | null;
+  readonly characterText: string;
+}
+
 export interface AffiliateStudioView {
   readonly product: StudioProduct | null;
   readonly config: AffiliateCreativeConfig;
   readonly limits: AffiliateLimits;
   readonly ffmpeg: { available: boolean; version: string | null };
   readonly references: readonly ReferenceAsset[];
+  /** Characters this product's plans use, with their reference image (if added) and a sheet prompt for Flow. */
+  readonly characters: readonly StudioCharacter[];
+  /** The listing photo used as the product reference, if saved. */
+  readonly productPhoto: { id: string; name: string } | null;
   readonly videos: readonly AffiliateVideoView[];
   readonly today: ProductCounts | null;
 }
@@ -208,6 +234,8 @@ export interface AffiliateStudioDeps {
   readonly log: Logger;
   /** Reference files (product images) with the owner's rights confirmation. */
   readonly assets: (bundleId: string) => ReferenceAsset[];
+  /** Absolute path of a reference file (product photo, character sheet). */
+  readonly referencePath?: (bundleId: string, assetId: string) => string;
   /** Resolved once at start; null if FFmpeg isn't installed. */
   readonly ffmpeg: () => FfmpegRunner | null;
   readonly flowSessionOf: (bundleId: string) => string | null;
@@ -544,20 +572,85 @@ export class AffiliateStudioService {
     }
     const budget = this.#deps.pool.canSpend(flow);
     if (!budget.ok) throw new AffiliateStudioError('flow_budget_exhausted', [budget.reason]);
+    // One clip per Flow window at a time: a download is filed under the clip that window is waiting for.
+    const waiting = this.#db.prepare("SELECT 1 FROM affiliate_clips WHERE flow_bundle_id = ? AND status = 'in_flow' AND id != ? LIMIT 1").get(flow, clipId);
+    if (waiting) throw new AffiliateStudioError('clip_action_not_allowed', ['another_clip_in_flow']);
     this.#db
       .prepare("UPDATE affiliate_clips SET status = 'in_flow', flow_bundle_id = ?, job_id = NULL, attempts = attempts + 1, last_reason = NULL, updated_at = ? WHERE id = ?")
       .run(flow, this.#iso(), clipId);
     this.#db.prepare("UPDATE affiliate_videos SET status = 'producing', last_error = NULL, updated_at = ? WHERE id = ? AND status IN ('approved', 'review')").run(this.#iso(), v.id);
     this.#event(bundleId, v.product_id, v.id, clipId, flow, 'attempt', null);
     this.#deps.log.info('affiliate_clip_handoff', { bundleId, video: v.id, slot: clip.slot, flow });
-    return { text: renderText(JSON.parse(clip.slot === 'A' ? v.clip_a_json : v.clip_b_json) as PromptContent), flowBundleId: flow };
+    return { text: this.clipText(bundleId, clipId), flowBundleId: flow };
+  }
+
+  // ---- Reference images for Flow (product photo + character sheet) ----
+
+  #characterAsset(bundleId: string, text: string): { id: string; name: string } | null {
+    const row = this.#db.prepare('SELECT asset_id FROM affiliate_characters WHERE bundle_id = ? AND character_key = ?').get(bundleId, characterKey(text)) as { asset_id: string } | undefined;
+    const asset = row ? this.#deps.assets(bundleId).find((a) => a.id === row.asset_id && a.kind === 'image') : undefined;
+    return asset ? { id: asset.id, name: asset.name } : null;
+  }
+
+  /** Characters used by this product's plans (not rejected), most used first. */
+  characters(bundleId: string, productRowId: string): StudioCharacter[] {
+    this.#require(bundleId);
+    const config = this.config(bundleId);
+    const counts = new Map<string, number>();
+    for (const r of this.#db.prepare("SELECT axes_json FROM affiliate_videos WHERE bundle_id = ? AND product_row_id = ? AND status != 'rejected'").all(bundleId, productRowId) as Array<{ axes_json: string }>) {
+      const c = (JSON.parse(r.axes_json) as Record<string, string>)['character'];
+      if (c) counts.set(c, (counts.get(c) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([text, plans]) => {
+        const asset = this.#characterAsset(bundleId, text);
+        return { key: characterKey(text), text, assetId: asset?.id ?? null, assetName: asset?.name ?? null, sheetPrompt: characterSheetPrompt(text, config.style), plans };
+      });
+  }
+
+  /** Links a character description to its reference image (an image reference of this account). */
+  setCharacterImage(bundleId: string, productRowId: string, key: string, assetId: string): void {
+    this.#require(bundleId);
+    const character = this.characters(bundleId, productRowId).find((c) => c.key === key);
+    if (!character) throw new AffiliateStudioError('unknown_character');
+    if (!this.#deps.assets(bundleId).some((a) => a.id === assetId && a.kind === 'image')) throw new AffiliateStudioError('unknown_character', ['not_an_image']);
+    this.#db
+      .prepare(
+        `INSERT INTO affiliate_characters (bundle_id, character_key, character_text, asset_id, updated_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(bundle_id, character_key) DO UPDATE SET character_text = excluded.character_text, asset_id = excluded.asset_id, updated_at = excluded.updated_at`,
+      )
+      .run(bundleId, key, character.text, assetId, this.#iso());
+  }
+
+  /** The product photo and the character sheet that go into Flow with this clip. */
+  clipReferences(bundleId: string, clipId: string): ClipReferences {
+    const clip = this.#clip(bundleId, clipId);
+    const v = this.#video(bundleId, clip.video_id);
+    const characterText = (JSON.parse(v.axes_json) as Record<string, string>)['character'] ?? '';
+    const withPath = (a: { id: string; name: string } | null) => (a && this.#deps.referencePath ? { ...a, path: this.#deps.referencePath(bundleId, a.id) } : null);
+    return {
+      product: withPath(this.#productPhoto(bundleId, v.product_row_id)),
+      character: characterText ? withPath(this.#characterAsset(bundleId, characterText)) : null,
+      characterText,
+    };
+  }
+
+  /** Refuses a hand-off without the product photo or the character sheet, unless the owner chose to send anyway. */
+  requireReferences(bundleId: string, clipId: string): ClipReferences {
+    const refs = this.clipReferences(bundleId, clipId);
+    const missing = [...(refs.product ? [] : ['product_photo']), ...(refs.character ? [] : ['character_sheet'])];
+    if (missing.length > 0) throw new AffiliateStudioError('references_missing', missing);
+    return refs;
   }
 
   /** The prompt text of a clip (to copy again). */
   clipText(bundleId: string, clipId: string): string {
     const clip = this.#clip(bundleId, clipId);
     const v = this.#video(bundleId, clip.video_id);
-    return renderText(JSON.parse(clip.slot === 'A' ? v.clip_a_json : v.clip_b_json) as PromptContent);
+    const refs = this.clipReferences(bundleId, clipId);
+    const line = referenceLine({ product: refs.product !== null, character: refs.character !== null });
+    return [renderText(JSON.parse(clip.slot === 'A' ? v.clip_a_json : v.clip_b_json) as PromptContent), line].filter(Boolean).join('\n\n');
   }
 
   /** For the Flow download handler: the oldest clip waiting in this Flow account's window. */
@@ -794,7 +887,9 @@ export class AffiliateStudioService {
     const facts = JSON.parse(r.facts_json) as ProductFacts;
     const config = JSON.parse(r.config_json) as AffiliateCreativeConfig;
     const photo = this.#productPhoto(r.bundle_id, r.product_row_id);
-    const refNames = [...(photo ? [photo.name] : []), ...this.#deps.assets(r.bundle_id).filter((a) => config.referenceAssetIds.includes(a.id) && a.id !== photo?.id).map((a) => a.name)];
+    const characterText = (JSON.parse(r.axes_json) as Record<string, string>)['character'] ?? '';
+    const sheet = characterText ? this.#characterAsset(r.bundle_id, characterText) : null;
+    const refNames = [...(photo ? [photo.name] : []), ...(sheet ? [sheet.name] : []), ...this.#deps.assets(r.bundle_id).filter((a) => config.referenceAssetIds.includes(a.id) && a.id !== photo?.id).map((a) => a.name)];
     const product = this.#db.prepare('SELECT showcase_state FROM affiliate_products WHERE id = ?').get(r.product_row_id) as { showcase_state: string } | undefined;
     const clipView = (c: ClipRow): ClipView => ({
       id: c.id,
@@ -851,6 +946,8 @@ export class AffiliateStudioService {
       limits: this.limits(bundleId),
       ffmpeg: { available: !!ff, version: ff?.install.version ?? null },
       references: this.#deps.assets(bundleId).filter((a) => a.kind === 'image'),
+      characters: this.characters(bundleId, productRowId),
+      productPhoto: this.#productPhoto(bundleId, productRowId),
       videos: rows.map((r) => this.#videoView(r)),
       today: this.#counts(productRowId),
     };
